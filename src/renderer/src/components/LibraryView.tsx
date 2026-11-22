@@ -1,0 +1,225 @@
+import { useEffect } from 'react'
+import type { PhotoRecord, Settings } from '../../../shared/types'
+import { editKey } from '../../../shared/types'
+import { Button } from '@renderer/components/ui/button'
+import { Slider } from '@renderer/components/ui/slider'
+import { formatPixels, formatScore } from '@renderer/lib/format'
+import { cn } from '@renderer/lib/utils'
+
+interface LibraryViewProps {
+  photos: PhotoRecord[]
+  settings: Settings
+  selectedId: string | null
+  thumbs: Record<string, string>
+  onSelect: (id: string) => void
+  onOpen: (id: string) => void
+  onSettings: (settings: Settings) => void
+  onMarkBlurry: (id: string) => void
+  onRemove: (id: string) => void
+  onShowCulled: (which: 'blurry' | 'duplicate') => void
+}
+
+export function LibraryView(props: LibraryViewProps) {
+  const kept = props.photos.filter((photo) => photo.status === 'kept')
+  const blurry = props.photos.filter((photo) => photo.status === 'blurry').length
+  const duplicates = props.photos.filter((photo) => photo.status === 'duplicate').length
+  const selected = props.photos.find((photo) => photo.id === props.selectedId) ?? null
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
+      if (kept.length === 0) return
+      const index = Math.max(0, kept.findIndex((photo) => photo.id === props.selectedId))
+      const next = event.key === 'ArrowRight' ? (index + 1) % kept.length : (index - 1 + kept.length) % kept.length
+      props.onSelect(kept[next].id)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [kept, props])
+
+  return (
+    <div className="grid h-full min-h-0 grid-cols-[268px_minmax(0,1fr)]">
+      <aside className="flex min-h-0 flex-col gap-5 overflow-auto border-r border-white/10 bg-panel px-4 py-4">
+        <section>
+          <h2 className="text-[11px] tracking-[0.16em] text-faint uppercase">Bestand</h2>
+          <ul className="mt-2 space-y-1 text-[13px]">
+            <Count label="Behalten" value={kept.length} tone="text-keep" />
+            <button className="flex w-full justify-between py-1 text-left" onClick={() => props.onShowCulled('blurry')}>
+              <span className="text-ink-soft">Unscharf</span>
+              <span className="text-blur">{blurry}</span>
+            </button>
+            <button className="flex w-full justify-between py-1 text-left" onClick={() => props.onShowCulled('duplicate')}>
+              <span className="text-ink-soft">Duplikate</span>
+              <span className="text-brass">{duplicates}</span>
+            </button>
+          </ul>
+        </section>
+        <section className="space-y-4">
+          <h2 className="text-[11px] tracking-[0.16em] text-faint uppercase">Schwellen</h2>
+          <Threshold
+            label="Unscharf unter"
+            valueLabel={formatScore(props.settings.blurThreshold)}
+            help="Niedrig sortiert nur deutlich weiche Bilder aus. Hoch ist strenger."
+            min={0}
+            max={80}
+            step={1}
+            value={props.settings.blurThreshold}
+            onChange={(value) => props.onSettings({ ...props.settings, blurThreshold: value })}
+          />
+          <Threshold
+            label="Duplikat-Toleranz"
+            valueLabel={`${Math.round(props.settings.duplicateDistance)} / 64`}
+            help="0 erkennt nur identische Hashes. 8 fasst Serienaufnahmen zusammen."
+            min={0}
+            max={20}
+            step={1}
+            value={props.settings.duplicateDistance}
+            onChange={(value) => props.onSettings({ ...props.settings, duplicateDistance: value })}
+          />
+        </section>
+        {selected && (
+          <section className="mt-auto space-y-2 border-t border-white/10 pt-4">
+            <div className="truncate text-[13px] text-ink">{selected.fileName}</div>
+            <div className="text-[12px] text-ink-soft">
+              {formatPixels(selected.width, selected.height)} · Schärfe {formatScore(selected.sharpnessScore)}
+            </div>
+            <div className="flex flex-col gap-2 pt-1">
+              <Button variant="quiet" onClick={() => props.onOpen(selected.id)}>
+                Entwickeln
+              </Button>
+              <Button variant="ghost" onClick={() => props.onMarkBlurry(selected.id)}>
+                Als unscharf markieren
+              </Button>
+              <Button variant="ghost" onClick={() => props.onRemove(selected.id)}>
+                Aus der Bibliothek nehmen
+              </Button>
+            </div>
+          </section>
+        )}
+      </aside>
+      <div className="min-h-0 overflow-auto p-4">
+        {kept.length === 0 ? (
+          <EmptyLibrary total={props.photos.length} />
+        ) : (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
+            {kept.map((photo) => (
+              <PhotoTile
+                key={photo.id}
+                photo={photo}
+                selected={photo.id === props.selectedId}
+                src={props.thumbs[`${photo.id}:${editKey(photo.edits)}`]}
+                onSelect={() => props.onSelect(photo.id)}
+                onOpen={() => props.onOpen(photo.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Count({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <li className="flex justify-between py-1">
+      <span className="text-ink-soft">{label}</span>
+      <span className={tone}>{value}</span>
+    </li>
+  )
+}
+
+function Threshold(props: {
+  label: string
+  valueLabel: string
+  help: string
+  min: number
+  max: number
+  step: number
+  value: number
+  onChange: (value: number) => void
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline justify-between text-[13px]">
+        <span>{props.label}</span>
+        <span className="text-brass">{props.valueLabel}</span>
+      </div>
+      <Slider
+        min={props.min}
+        max={props.max}
+        step={props.step}
+        value={[props.value]}
+        onValueChange={([value]) => props.onChange(value)}
+        aria-label={props.label}
+      />
+      <p className="mt-2 text-[11px] leading-relaxed text-faint">{props.help}</p>
+    </div>
+  )
+}
+
+function PhotoTile(props: {
+  photo: PhotoRecord
+  selected: boolean
+  src?: string
+  onSelect: () => void
+  onOpen: () => void
+}) {
+  return (
+    <button
+      className={cn(
+        'overflow-hidden rounded-lg bg-[#0c0d10] text-left ring-1 transition',
+        props.selected ? 'ring-brass' : 'ring-white/10 hover:ring-white/25'
+      )}
+      onClick={props.onSelect}
+      onDoubleClick={props.onOpen}
+    >
+      <div className="flex aspect-[3/2] items-center justify-center">
+        {props.src ? (
+          <img src={props.src} alt="" className="h-full w-full object-contain" />
+        ) : (
+          <div className="h-full w-full animate-pulse bg-white/5" />
+        )}
+      </div>
+      <div className="flex items-center justify-between gap-2 px-2.5 py-2">
+        <div className="min-w-0">
+          <div className="truncate text-[12px]">{props.photo.fileName}</div>
+          <div className="text-[11px] text-faint">Schärfe {formatScore(props.photo.sharpnessScore)}</div>
+        </div>
+        {props.photo.developedFrom === 'sensor' && (
+          <span className="shrink-0 rounded bg-brass/15 px-1.5 py-0.5 text-[10px] tracking-wide text-brass uppercase">
+            RAW
+          </span>
+        )}
+        {props.photo.developedFrom === 'embedded-preview' && (
+          <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] tracking-wide text-ink-soft uppercase">
+            Vorschau
+          </span>
+        )}
+      </div>
+    </button>
+  )
+}
+
+function EmptyLibrary({ total }: { total: number }) {
+  if (total > 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-center text-ink-soft">
+        <div>
+          <p className="text-ink">Alle Fotos liegen in „Aussortiert“.</p>
+          <p className="mt-1 text-[13px]">Schwellen lockern oder Bilder wiederherstellen.</p>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="flex h-full items-center justify-center">
+      <div className="max-w-md text-center">
+        <p className="wordmark text-4xl text-ink">Die Kammer ist leer.</p>
+        <p className="mt-3 text-[14px] leading-relaxed text-ink-soft">
+          Ziehe einen Ordner oder einzelne Fotos hierher. JPG, PNG, TIFF, WEBP und RAW-Dateien mit
+          eingebetteter Vorschau (CR2, NEF, ARW, DNG) werden gesichtet, ohne die Originale anzufassen.
+        </p>
+      </div>
+    </div>
+  )
+}

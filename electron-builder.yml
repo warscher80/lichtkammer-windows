@@ -1,0 +1,81 @@
+appId: studio.lichtkammer.app
+productName: Lichtkammer
+copyright: Copyright © 2026 Lichtkammer
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!scripts/*'
+  - '!beispiele/**'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.gitignore,.npmrc,README.md}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tsconfig.*.tsbuildinfo}'
+
+extraResources:
+  - from: beispiele
+    to: beispiele
+    filter:
+      - '**/*'
+      - '!QUELLEN.md'
+
+asarUnpack:
+  - '**/*.node'
+  - '**/*.wasm'
+  - '**/node_modules/sharp/**/*'
+  - '**/node_modules/@img/**/*'
+  - '**/node_modules/flashraw/**/*'
+
+# Signatur nur über Umgebungsvariablen, ohne Secrets im Repo.
+# Windows: CSC_LINK (pfx oder base64) und CSC_KEY_PASSWORD.
+# macOS: Developer ID Application über den Schlüsselbund oder CSC_LINK plus
+# CSC_KEY_PASSWORD. Notarisierung, sobald entweder APPLE_ID,
+# APPLE_APP_SPECIFIC_PASSWORD und APPLE_TEAM_ID gesetzt sind, oder
+# APPLE_API_KEY, APPLE_API_KEY_ID und APPLE_API_ISSUER.
+# Ohne Zertifikat bleibt der Build unsigniert. Siehe README.
+win:
+  executableName: Lichtkammer
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: Lichtkammer
+  uninstallDisplayName: Lichtkammer
+  createDesktopShortcut: always
+  artifactName: ${productName}-Setup.${ext}
+
+mac:
+  category: public.app-category.photography
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+dmg:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+linux:
+  target:
+    - AppImage
+  category: Photography
+  maintainer: Lichtkammer
+  artifactName: ${productName}-${version}.${ext}
+
+npmRebuild: true

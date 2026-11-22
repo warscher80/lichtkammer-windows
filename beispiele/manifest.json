@@ -1,0 +1,66 @@
+{
+  "blurThreshold": 32,
+  "duplicateDistance": 8,
+  "files": [
+    {
+      "name": "01-fjord-scharf.jpg",
+      "expect": "kept"
+    },
+    {
+      "name": "02-fjord-kopie.jpg",
+      "expect": "duplicate",
+      "sameGroupAs": "01-fjord-scharf.jpg"
+    },
+    {
+      "name": "03-fjord-nahe.jpg",
+      "expect": "duplicate",
+      "sameGroupAs": "01-fjord-scharf.jpg"
+    },
+    {
+      "name": "04-kanu.jpg",
+      "expect": "kept",
+      "notSameGroupAs": "01-fjord-scharf.jpg"
+    },
+    {
+      "name": "05-wasserfall-unscharf.jpg",
+      "expect": "blurry"
+    },
+    {
+      "name": "06-roehre-unscharf.jpg",
+      "expect": "blurry"
+    },
+    {
+      "name": "07-yosemite-dunkel.jpg",
+      "expect": "kept",
+      "minExposure": 0.35
+    },
+    {
+      "name": "08-bruegge-farbstich.jpg",
+      "expect": "kept",
+      "minAbsTemperature": 8
+    },
+    {
+      "name": "09-hochland-flach.jpg",
+      "expect": "kept",
+      "minContrast": 8
+    },
+    {
+      "name": "10-leuchtturm.jpg",
+      "expect": "kept"
+    },
+    {
+      "name": "11-erdbeeren.png",
+      "expect": "kept"
+    },
+    {
+      "name": "12-loewin.ARW",
+      "expect": "kept",
+      "embedded": true
+    },
+    {
+      "name": "14-motiv-anders.jpg",
+      "expect": "kept",
+      "notSameGroupAs": "01-fjord-scharf.jpg"
+    }
+  ]
+}
