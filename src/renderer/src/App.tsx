@@ -50,6 +50,13 @@ export default function App() {
     return () => window.clearTimeout(handle)
   }, [])
 
+  // Das gewählte Foto schon in der Bibliothek vorladen: „Bearbeiten“ zeigt es dann ohne Wartezeit.
+  useEffect(() => {
+    if (!selectedId || view === 'develop') return
+    const handle = window.setTimeout(() => getEngine()?.engine.preload([selectedId]), 120)
+    return () => window.clearTimeout(handle)
+  }, [selectedId, view])
+
   useEffect(() => {
     void window.api.getCatalog().then((next) => {
       setCatalog(next)

@@ -86,7 +86,7 @@ export class GpuEngine {
   private histogramTimer = 0
   private lastHistogram = 0
   private clock = 0
-  private fitEdge = 2048
+  private fitEdge = readFitEdge()
   private neighbours: string[] = []
   onInfo: (info: EngineInfo) => void = () => undefined
   onHistogram: (bins: number[]) => void = () => undefined
@@ -114,6 +114,23 @@ export class GpuEngine {
     if (!value) this.scheduleIdle()
   }
 
+  /** Fotos schon vor dem Öffnen laden (z. B. das in der Bibliothek gewählte), damit „Bearbeiten“ sofort das Bild zeigt. */
+  preload(ids: string[]): void {
+    for (const id of ids.slice(0, 3)) {
+      const edge = this.fitEdge
+      if (this.takeTexture(id, Math.round(edge * 0.75)) || this.raws.has(this.key(id, edge))) continue
+      void this.request(id, edge, 'prefetch').then((raw) => {
+        if (!raw) return
+        this.raws.set(this.key(id, edge), raw)
+        while (this.raws.size > 4) {
+          const first = this.raws.keys().next().value
+          if (first === undefined) break
+          this.raws.delete(first)
+        }
+      })
+    }
+  }
+
   setNeighbours(ids: string[]): void {
     this.neighbours = ids
     this.prefetch()
@@ -130,6 +147,7 @@ export class GpuEngine {
     const previous = this.state
     this.state = state
     this.fitEdge = fitEdgeFor(state.stageWidth, state.stageHeight)
+    if (this.fitEdge !== storedFitEdge) saveFitEdge(this.fitEdge)
     if (!previous || previous.id !== state.id) this.select(state.id)
     else if (state.zoom > 1.25 && this.needsBig()) void this.loadBig(state.id)
     this.requestDraw()
@@ -397,7 +415,7 @@ export class GpuEngine {
     this.lastDraw = performance.now()
     if (this.dragging) {
       // Zu langsam (Software-Grafik): während des Ziehens gröber rechnen, danach wieder scharf.
-      if (cost > 34 && this.scale > 0.45) this.scale = Math.max(0.45, this.scale * 0.78)
+      if (cost > 34 && this.scale > 0.3) this.scale = Math.max(0.3, this.scale * 0.72)
       this.scheduleIdle()
     }
     if (window.__lkFrameDone) {
@@ -461,6 +479,30 @@ export class GpuEngine {
     for (const entry of this.textures.values()) this.pipeline.release(entry.source)
     this.textures.clear()
     this.raws.clear()
+  }
+}
+
+let storedFitEdge = 0
+
+function readFitEdge(): number {
+  try {
+    const value = Number(window.localStorage.getItem('lk.fitEdge'))
+    if (value >= 1536 && value <= 3072) {
+      storedFitEdge = value
+      return value
+    }
+  } catch {
+    /* kein Speicher */
+  }
+  return 1536
+}
+
+function saveFitEdge(value: number): void {
+  storedFitEdge = value
+  try {
+    window.localStorage.setItem('lk.fitEdge', String(value))
+  } catch {
+    /* kein Speicher */
   }
 }
 
