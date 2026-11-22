@@ -19,7 +19,9 @@
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:linux": "electron-vite build && electron-builder --linux AppImage",
     "postinstall": "electron-builder install-app-deps",
-    "test": "tsx scripts/test-pipeline.ts"
+    "test": "tsx scripts/test-pipeline.ts",
+    "bench": "tsx scripts/bench-import.mts",
+    "bench:make": "tsx scripts/make-bench-set.ts"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
@@ -36,6 +38,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.11",
     "flashraw": "^0.3.1",
     "lucide-react": "^0.554.0",
     "react": "^19.2.0",

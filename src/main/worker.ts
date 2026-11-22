@@ -1,6 +1,10 @@
 import { parentPort } from 'node:worker_threads'
+import sharp from 'sharp'
 import { analyzeFile, renderImage, renderLooks } from './engine/process'
 import type { EditParams } from '../shared/types'
+
+// Mehrere Worker laufen parallel: je Worker wenige libvips-Threads, damit sich die Kerne nicht im Weg stehen.
+sharp.concurrency(2)
 
 interface AnalyzeMessage {
   id: number

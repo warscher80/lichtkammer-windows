@@ -1,6 +1,6 @@
 import { Copy, RotateCcw } from 'lucide-react'
 import type { PhotoRecord } from '../../../shared/types'
-import { editKey } from '../../../shared/types'
+import { thumbUrl } from '@renderer/lib/thumb'
 import { Button } from '@renderer/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@renderer/components/ui/tabs'
 import { formatPixels, formatScore } from '@renderer/lib/format'
@@ -9,7 +9,6 @@ interface CulledViewProps {
   photos: PhotoRecord[]
   tab: 'blurry' | 'duplicate'
   onTab: (tab: 'blurry' | 'duplicate') => void
-  thumbs: Record<string, string>
   threshold: number
   onRestore: (ids: string[]) => void
   onOpen: (id: string) => void
@@ -51,7 +50,7 @@ export function CulledView(props: CulledViewProps) {
                 <div className="grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3">
                   {blurry.map((photo) => (
                     <article key={photo.id} className="flex min-w-0 gap-3 overflow-hidden rounded-lg bg-panel p-3 ring-1 ring-white/10">
-                      <Thumb photo={photo} thumbs={props.thumbs} />
+                      <Thumb photo={photo} />
                       <div className="flex min-w-0 flex-1 flex-col">
                         <div className="truncate text-[13px]">{photo.fileName}</div>
                         <p className="mt-1 text-[12px] leading-relaxed text-ink-soft">
@@ -88,7 +87,7 @@ export function CulledView(props: CulledViewProps) {
                   <section key={group.keeper?.id ?? group.copies[0].id} className="rounded-lg bg-panel p-3 ring-1 ring-white/10">
                     {group.keeper && (
                       <div className="mb-3 flex items-center gap-3">
-                        <Thumb photo={group.keeper} thumbs={props.thumbs} />
+                        <Thumb photo={group.keeper} />
                         <div>
                           <div className="text-[11px] tracking-[0.14em] text-keep uppercase">Behalten</div>
                           <div className="text-[13px]">{group.keeper.fileName}</div>
@@ -101,7 +100,7 @@ export function CulledView(props: CulledViewProps) {
                     <div className="space-y-2 border-t border-white/10 pt-3">
                       {group.copies.map((photo) => (
                         <div key={photo.id} className="flex items-center gap-3">
-                          <Thumb photo={photo} thumbs={props.thumbs} />
+                          <Thumb photo={photo} />
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-[13px]">{photo.fileName}</div>
                             <div className="text-[12px] text-ink-soft">
@@ -140,11 +139,10 @@ function groupDuplicates(photos: PhotoRecord[]): { keeper?: PhotoRecord; copies:
   }))
 }
 
-function Thumb({ photo, thumbs }: { photo: PhotoRecord; thumbs: Record<string, string> }) {
-  const src = thumbs[`${photo.id}:${editKey(photo.edits)}`]
+function Thumb({ photo }: { photo: PhotoRecord }) {
   return (
     <div className="flex h-16 w-24 shrink-0 items-center justify-center overflow-hidden rounded-md bg-black">
-      {src ? <img src={src} alt="" className="h-full w-full object-cover" /> : <div className="h-full w-full animate-pulse bg-white/5" />}
+      <img src={thumbUrl(photo)} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
     </div>
   )
 }

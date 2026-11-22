@@ -53,9 +53,9 @@ function loadFlashRaw(): Promise<FlashModule> {
  * Entwickelt eine RAW-Datei aus den Sensordaten (Demosaik, Kamera-Weißabgleich, sRGB).
  * Kleine Kanten nutzen 2×2-Binning, der Export die volle Auflösung.
  */
-export async function decodeSensorRaw(filePath: string, maxEdge: number): Promise<SensorImage> {
+export async function decodeSensorRaw(filePath: string, maxEdge: number, file?: Buffer): Promise<SensorImage> {
   const { FlashRaw } = await loadFlashRaw()
-  const raw = await FlashRaw.open(await readFile(filePath), { init: { threads: false } })
+  const raw = await FlashRaw.open(file ?? (await readFile(filePath)), { init: { threads: false } })
   try {
     const fullWidth = raw.metadata.width
     const fullHeight = raw.metadata.height

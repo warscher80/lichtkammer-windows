@@ -1,17 +1,27 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, protocol, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { ImagePool } from './pool'
 import { Session } from './session'
-import { runSmokeTest } from './smoke'
+import { runImportBench, runSmokeTest } from './smoke'
+import { Updater } from './updater'
 import type { EditParams, ExportOptions, Settings } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
+// Vorschaubilder kommen über lkthumb://, damit die Oberfläche sie träge und ohne base64 lädt.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'lkthumb', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+])
+const updater = new Updater((state) => {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:state', state)
+})
+const updateTestArg = process.argv.find((arg) => arg.startsWith('--update-test='))
 const smokeArg = process.argv.find((arg) => arg.startsWith('--smoke-test='))
 const smokeDir = smokeArg ? smokeArg.slice('--smoke-test='.length) : null
+const benchDir = process.argv.find((arg) => arg.startsWith('--bench-dir='))?.slice('--bench-dir='.length) ?? null
 if (smokeDir) app.setPath('userData', join(smokeDir, 'userdata'))
-const pool = new ImagePool(2)
+const pool = new ImagePool()
 const session = new Session(
   pool,
   (channel, payload) => {
@@ -82,6 +92,13 @@ function buildMenu(): void {
       ]
     },
     {
+      label: 'Hilfe',
+      submenu: [
+        { label: 'Nach Updates suchen', click: () => void updater.check(true) },
+        { label: `Version ${app.getVersion()}`, enabled: false }
+      ]
+    },
+    {
       label: 'Ansicht',
       submenu: [
         { role: 'reload', label: 'Neu laden' },
@@ -121,11 +138,31 @@ app.whenReady().then(async () => {
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
+  protocol.handle('lkthumb', async (request) => {
+    try {
+      const id = decodeURIComponent(new URL(request.url).pathname.replace(/^\//, ''))
+      const bytes = await session.thumbBytes(id)
+      if (!bytes) return new Response(null, { status: 404 })
+      return new Response(new Uint8Array(bytes), {
+        headers: { 'content-type': 'image/jpeg', 'cache-control': 'max-age=31536000, immutable' }
+      })
+    } catch {
+      return new Response(null, { status: 500 })
+    }
+  })
+  if (updateTestArg) {
+    // Nur für den Update-Test im Workflow: ohne Fenster prüfen, laden und still installieren.
+    await updater.runTest(updateTestArg.slice('--update-test='.length))
+    return
+  }
   registerIpc()
   buildMenu()
   createWindow()
+  if (!smokeDir) updater.start()
   if (smokeDir && mainWindow) {
-    const ok = await runSmokeTest(session, mainWindow, smokeDir)
+    const ok = benchDir
+      ? await runImportBench(session, mainWindow, benchDir, smokeDir)
+      : await runSmokeTest(session, mainWindow, smokeDir)
     app.exit(ok ? 0 : 1)
     return
   }
@@ -173,7 +210,6 @@ function registerIpc(): void {
     return session.lookPreviews(id, edits as unknown as EditParams)
   })
   ipcMain.handle('save:all', () => session.saveAll())
-  ipcMain.handle('thumb', (_event, id: unknown) => (isId(id) ? session.thumb(id) : ''))
   ipcMain.handle('dialog:directory', () => session.chooseOutputDir())
   ipcMain.handle('export', (_event, options: unknown) => {
     if (!isExportOptions(options)) throw new Error('Ungültige Exportangaben.')
@@ -183,6 +219,11 @@ function registerIpc(): void {
   ipcMain.handle('shell:show', (_event, target: unknown) => {
     if (typeof target !== 'string' || !isAbsolute(target)) return
     return session.showPath(target)
+  })
+  ipcMain.handle('update:get', () => updater.getState())
+  ipcMain.handle('update:check', () => updater.check(true))
+  ipcMain.handle('update:install', () => {
+    updater.install()
   })
   ipcMain.handle('job:cancel', () => {
     session.cancel()

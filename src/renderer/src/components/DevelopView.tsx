@@ -8,6 +8,7 @@ import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import { Separator } from '@renderer/components/ui/separator'
 import { Slider } from '@renderer/components/ui/slider'
 import { formatEdit, formatPixels } from '@renderer/lib/format'
+import { thumbUrl } from '@renderer/lib/thumb'
 import { cn } from '@renderer/lib/utils'
 
 interface Field {
@@ -56,7 +57,6 @@ const FULL: CropRect = { x: 0, y: 0, w: 1, h: 1 }
 interface DevelopViewProps {
   photos: PhotoRecord[]
   selectedId: string | null
-  thumbs: Record<string, string>
   onSelect: (id: string) => void
   onEdit: (id: string, edits: EditParams, dragging: boolean) => void
   onAuto: (id: string) => void
@@ -637,7 +637,6 @@ export function DevelopView(props: DevelopViewProps) {
         </div>
         <div className="flex items-center gap-2 overflow-x-auto border-t border-white/5 px-3 py-2">
           {strip.map((item) => {
-            const src = props.thumbs[`${item.id}:${editKey(item.edits)}`]
             return (
               <button
                 key={item.id}
@@ -647,7 +646,7 @@ export function DevelopView(props: DevelopViewProps) {
                 )}
                 onClick={() => props.onSelect(item.id)}
               >
-                {src ? <img src={src} alt="" className="h-full w-full object-cover" /> : <div className="h-full animate-pulse bg-white/5" />}
+                <img src={thumbUrl(item)} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
               </button>
             )
           })}

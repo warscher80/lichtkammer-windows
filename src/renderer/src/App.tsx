@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import type { Catalog, EditParams, JobProgress, Notice, Settings } from '../../shared/types'
-import { editKey } from '../../shared/types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Catalog, EditParams, JobProgress, Notice, Settings, UpdateState } from '../../shared/types'
 import { CulledView } from '@renderer/components/CulledView'
 import { DevelopView } from '@renderer/components/DevelopView'
 import { ExportDialog } from '@renderer/components/ExportDialog'
@@ -15,12 +14,15 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [progress, setProgress] = useState<JobProgress | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
-  const [thumbs, setThumbs] = useState<Record<string, string>>({})
+  const [update, setUpdate] = useState<UpdateState | null>(null)
   const [dragging, setDragging] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
+  const openDevelop = useCallback((id: string) => {
+    setSelectedId(id)
+    setView('develop')
+  }, [])
   const dragDepth = useRef(0)
   const settingsTimer = useRef<number | null>(null)
-  const scrubbing = useRef(false)
 
   useEffect(() => {
     void window.api.getCatalog().then((next) => {
@@ -63,32 +65,9 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!catalog) return
-    let cancel = false
-    const pending = catalog.photos.filter((photo) => !thumbs[`${photo.id}:${editKey(photo.edits)}`])
-    if (pending.length === 0) return
-    const queue = [...pending]
-    const run = async (): Promise<void> => {
-      while (queue.length > 0 && !cancel) {
-        const photo = queue.shift()
-        if (!photo || scrubbing.current) return
-        try {
-          const url = await window.api.thumb(photo.id)
-          if (cancel) return
-          setThumbs((current) => ({ ...current, [`${photo.id}:${editKey(photo.edits)}`]: url }))
-        } catch {
-          /* Vorschau kommt beim nächsten Durchgang. */
-        }
-      }
-    }
-    const handle = window.setTimeout(() => {
-      void Promise.all([run(), run(), run()])
-    }, scrubbing.current ? 500 : 30)
-    return () => {
-      cancel = true
-      window.clearTimeout(handle)
-    }
-  }, [catalog, thumbs])
+    void window.api.getUpdateState().then(setUpdate)
+    return window.api.onUpdateState(setUpdate)
+  }, [])
 
   useEffect(() => {
     if (!catalog) return
@@ -113,6 +92,7 @@ export default function App() {
   const blurry = catalog.photos.filter((photo) => photo.status === 'blurry').length
   const duplicates = catalog.photos.filter((photo) => photo.status === 'duplicate').length
   const busy = Boolean(progress?.active)
+  const importing = busy && progress?.phase === 'import'
 
   function updateSettings(settings: Settings): void {
     setCatalog((current) => (current ? { ...current, settings } : current))
@@ -128,8 +108,7 @@ export default function App() {
     })
   }
 
-  function edit(id: string, edits: EditParams, draggingEdit: boolean): void {
-    scrubbing.current = draggingEdit
+  function edit(id: string, edits: EditParams, _dragging: boolean): void {
     setCatalog((current) =>
       current
         ? {
@@ -151,6 +130,7 @@ export default function App() {
           blurry={blurry}
           duplicates={duplicates}
           busy={busy}
+          importing={importing}
           onImportFolder={() => void window.api.importDialog('folder')}
           onImportFiles={() => void window.api.importDialog('files')}
           onSamples={() => void window.api.importSamples()}
@@ -160,11 +140,7 @@ export default function App() {
         {busy && progress && (
           <div className="border-b border-white/10 bg-panel px-4 py-2">
             <div className="mb-1 flex items-center justify-between text-[12px] text-ink-soft">
-              <span>
-                {progress.phase === 'export' ? 'Exportiert' : progress.phase === 'copy' ? 'Kopiert' : 'Analysiert'}{' '}
-                {progress.current} von {progress.total}
-                {progress.label ? ` · ${progress.label}` : ''}
-              </span>
+              <span>{progressText(progress)}</span>
               <button className="text-brass" onClick={() => void window.api.cancelJob()}>
                 Abbrechen
               </button>
@@ -177,18 +153,33 @@ export default function App() {
             </div>
           </div>
         )}
+        {update?.status === 'ready' && (
+          <div className="flex items-center justify-between gap-4 border-b border-brass/40 bg-[#2a2113] px-4 py-2 text-[13px]">
+            <span>
+              Neue Version verfügbar – Jetzt neu starten und aktualisieren
+              {update.version ? ` (${update.version})` : ''}
+            </span>
+            <button
+              className="rounded-md bg-brass px-3 py-1 text-[12px] font-medium text-brass-ink hover:brightness-110"
+              onClick={() => void window.api.installUpdate()}
+            >
+              Jetzt neu starten
+            </button>
+          </div>
+        )}
+        {update?.status === 'downloading' && (
+          <div className="border-b border-white/10 bg-panel px-4 py-1.5 text-[12px] text-ink-soft">
+            Neue Version {update.version ?? ''} wird im Hintergrund geladen… {update.percent ?? 0} %
+          </div>
+        )}
         <main className="relative min-h-0 flex-1">
           {view === 'library' && (
             <LibraryView
               photos={catalog.photos}
               settings={catalog.settings}
               selectedId={selectedId}
-              thumbs={thumbs}
               onSelect={setSelectedId}
-              onOpen={(id) => {
-                setSelectedId(id)
-                setView('develop')
-              }}
+              onOpen={openDevelop}
               onSettings={updateSettings}
               onMarkBlurry={(id) => void window.api.markBlurry([id]).then(setCatalog)}
               onRemove={(id) => {
@@ -209,7 +200,6 @@ export default function App() {
               photos={catalog.photos}
               tab={culledTab}
               onTab={setCulledTab}
-              thumbs={thumbs}
               threshold={catalog.settings.blurThreshold}
               onRestore={(ids) => void window.api.restore(ids).then(setCatalog)}
               onOpen={(id) => {
@@ -223,7 +213,6 @@ export default function App() {
             <DevelopView
               photos={catalog.photos}
               selectedId={selectedId}
-              thumbs={thumbs}
               onSelect={setSelectedId}
               onEdit={edit}
               onAuto={(id) => void window.api.applyAuto(id).then(setCatalog)}
@@ -244,7 +233,16 @@ export default function App() {
           <span>
             {kept} behalten · {blurry} unscharf · {duplicates} Duplikate
           </span>
-          <span>Originale bleiben unberührt</span>
+          <span className="flex items-center gap-3">
+            <span>Originale bleiben unberührt</span>
+            <button
+              className="text-ink-soft hover:text-ink"
+              title="Prüft, ob es eine neuere Version gibt"
+              onClick={() => void window.api.checkForUpdates()}
+            >
+              {updateLabel(update)}
+            </button>
+          </span>
         </footer>
         {notice && (
           <div className="absolute bottom-12 left-1/2 z-30 max-w-xl -translate-x-1/2 rounded-full border border-white/10 bg-[#2a241b] px-4 py-2 text-[13px] text-ink shadow-xl">
@@ -255,4 +253,41 @@ export default function App() {
       </div>
     </TooltipProvider>
   )
+}
+
+function progressText(progress: JobProgress): string {
+  if (progress.phase === 'import') {
+    const eta = progress.etaSeconds
+    const rest = eta === null || eta === undefined ? '' : eta <= 1 ? ' · gleich fertig' : ` · noch ca. ${formatDuration(eta)}`
+    const cached = progress.cached ? ` (${progress.cached} schon bekannt)` : ''
+    return `Analysiert ${progress.current} von ${progress.total}${cached}${rest} · du kannst schon arbeiten`
+  }
+  const verb = progress.phase === 'export' ? 'Exportiert' : 'Kopiert'
+  return `${verb} ${progress.current} von ${progress.total}${progress.label ? ` · ${progress.label}` : ''}`
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} s`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds % 60)
+  return `${minutes} min ${rest} s`
+}
+
+function updateLabel(update: UpdateState | null): string {
+  if (!update) return ''
+  const version = `Version ${update.currentVersion}`
+  switch (update.status) {
+    case 'checking':
+      return `${version} · suche Updates…`
+    case 'none':
+      return `${version} · aktuell · Nach Updates suchen`
+    case 'error':
+      return `${version} · Suche fehlgeschlagen · Erneut versuchen`
+    case 'downloading':
+      return `${version} · lädt Update…`
+    case 'ready':
+      return `${version} · Update bereit`
+    default:
+      return `${version} · Nach Updates suchen`
+  }
 }

@@ -33,7 +33,20 @@ export async function runSmokeTest(session: Session, window: BrowserWindow, outD
     const catalog = session.getCatalog()
     steps.push(`Import: ${catalog.photos.length} Fotos`)
     if (catalog.photos.length < 10) throw new Error('Zu wenige Fotos importiert')
-    const kept = catalog.photos.filter((photo) => photo.status === 'kept')
+    steps.push(
+      `Import: ${session.lastImport.analyzed} analysiert in ${session.lastImport.seconds.toFixed(1)} s (${session.pool.size} Worker)`
+    )
+    // Zweiter Import nach dem Entfernen: alles kommt aus dem Zwischenspeicher.
+    const firstSeconds = session.lastImport.seconds
+    await session.removeFromLibrary(catalog.photos.map((photo) => photo.id))
+    await session.importSamples()
+    steps.push(
+      `Zwischenspeicher: ${session.lastImport.cached} von ${session.lastImport.added} aus dem Cache in ${session.lastImport.seconds.toFixed(1)} s (erstes Mal ${firstSeconds.toFixed(1)} s)`
+    )
+    if (session.lastImport.cached < session.lastImport.added || session.lastImport.analyzed !== 0) {
+      throw new Error('Zwischenspeicher greift nicht')
+    }
+    const kept = session.getCatalog().photos.filter((photo) => photo.status === 'kept')
     steps.push(`Behalten: ${kept.length}, aussortiert: ${catalog.photos.length - kept.length}`)
     const first = kept[0]
     // Look + HSL + Zuschnitt + Drehung
@@ -71,7 +84,11 @@ export async function runSmokeTest(session: Session, window: BrowserWindow, outD
     const domCount = (await window.webContents.executeJavaScript(
       'document.querySelectorAll("[data-photo-card]").length'
     )) as number
-    steps.push(`Oberfläche: ${domCount} Fotokarten`)
+    const loaded = (await window.webContents.executeJavaScript(
+      '[...document.querySelectorAll("[data-photo-card] img")].filter((i) => i.complete && i.naturalWidth > 0).length'
+    )) as number
+    steps.push(`Oberfläche: ${domCount} Fotokarten, ${loaded} Vorschaubilder geladen`)
+    if (loaded < domCount) throw new Error('Nicht alle Vorschaubilder geladen')
     if (domCount < 1) throw new Error('Bibliothek zeigt keine Fotos')
     const image = await window.webContents.capturePage()
     await writeFile(join(outDir, 'bibliothek.png'), image.toPNG())
@@ -106,5 +123,57 @@ export async function runSmokeTest(session: Session, window: BrowserWindow, outD
   }
   report.seconds = Math.round((Date.now() - started) / 1000)
   await writeFile(join(outDir, 'smoke.json'), JSON.stringify(report, null, 2))
+  return report.ok === true
+}
+
+/**
+ * Messung für CI: importiert einen Ordner wie ein Nutzer (über die App-Logik), misst die Zeit bis zum
+ * ersten Foto und bis alles fertig ist, danach den zweiten Import aus dem Zwischenspeicher.
+ */
+export async function runImportBench(session: Session, window: BrowserWindow, photosDir: string, outDir: string): Promise<boolean> {
+  const report: Record<string, unknown> = { ok: false }
+  try {
+    await mkdir(outDir, { recursive: true })
+    await new Promise<void>((resolve) => {
+      if (!window.webContents.isLoading()) resolve()
+      else window.webContents.once('did-finish-load', () => resolve())
+    })
+    const started = Date.now()
+    let firstMs = -1
+    const timer = setInterval(() => {
+      if (firstMs < 0 && session.getCatalog().photos.length > 0) firstMs = Date.now() - started
+    }, 20)
+    await session.importPaths([photosDir])
+    clearInterval(timer)
+    const total = (Date.now() - started) / 1000
+    const photos = session.getCatalog().photos
+    report.photos = photos.length
+    report.workers = session.pool.size
+    report.firstPhotoSeconds = firstMs < 0 ? null : firstMs / 1000
+    report.totalSeconds = total
+    report.perPhotoMs = Math.round((total / Math.max(1, photos.length)) * 1000)
+    report.analyzed = session.lastImport.analyzed
+    report.kept = photos.filter((photo) => photo.status === 'kept').length
+    report.blurry = photos.filter((photo) => photo.status === 'blurry').length
+    report.duplicates = photos.filter((photo) => photo.status === 'duplicate').length
+    report.fingerprint = photos
+      .map((photo) => `${photo.fileName}:${photo.sharpness.toFixed(3)}:${photo.hash}:${photo.status}`)
+      .sort()
+      .join('|')
+      .length
+    // Zweiter Import: alles aus dem Zwischenspeicher.
+    await session.removeFromLibrary(photos.map((photo) => photo.id))
+    const again = Date.now()
+    await session.importPaths([photosDir])
+    report.cachedSeconds = (Date.now() - again) / 1000
+    report.cachedHits = session.lastImport.cached
+    // Oberfläche: Karten sind da.
+    await new Promise((resolve) => setTimeout(resolve, 2500))
+    report.domCards = await window.webContents.executeJavaScript('document.querySelectorAll("[data-photo-card]").length')
+    report.ok = photos.length > 0 && session.lastImport.analyzed === 0
+  } catch (error) {
+    report.error = error instanceof Error ? error.message : String(error)
+  }
+  await writeFile(join(outDir, 'import-bench.json'), JSON.stringify(report, null, 2))
   return report.ok === true
 }

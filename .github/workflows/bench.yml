@@ -1,0 +1,69 @@
+# Misst die Import-Analyse mit 600 Fotos (24 und 48 Megapixel plus RAW) auf dem Windows-Runner:
+# alter Stand (Version 1.1.2) gegen den aktuellen Stand, dazu der echte App-Import. Von Hand starten.
+name: Messung
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_ref:
+        description: "Alter Stand zum Vergleich (Commit)"
+        default: "7cfd9d1"
+
+jobs:
+  bench:
+    name: Import-Messung (600 Fotos)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 600 Testfotos erzeugen
+        shell: pwsh
+        run: |
+          npx tsx scripts/make-bench-set.ts "$env:RUNNER_TEMP\fotos" 600 60
+          (Get-ChildItem "$env:RUNNER_TEMP\fotos" | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Kerne: $env:NUMBER_OF_PROCESSORS"
+      - name: Alter Stand bereitstellen
+        shell: pwsh
+        run: |
+          git worktree add ..\alt ${{ inputs.old_ref }}
+          New-Item -ItemType Junction -Path ..\alt\node_modules -Target "$PWD\node_modules" | Out-Null
+      - name: Alt, nacheinander (so lief der Import bis 1.1.2)
+        shell: pwsh
+        run: npx tsx scripts/bench-import.mts "$env:RUNNER_TEMP\fotos" --engine=../alt/src/main/engine/process.ts --workers=0 --out="$env:RUNNER_TEMP\alt.json"
+      - name: Neu, ein Worker
+        shell: pwsh
+        run: npx tsx scripts/bench-import.mts "$env:RUNNER_TEMP\fotos" --workers=1 --out="$env:RUNNER_TEMP\neu1.json"
+      - name: Neu, alle Kerne
+        shell: pwsh
+        run: |
+          $n = [Math]::Max(2, [int]$env:NUMBER_OF_PROCESSORS - 1)
+          npx tsx scripts/bench-import.mts "$env:RUNNER_TEMP\fotos" --workers=$n --sharp=2 --out="$env:RUNNER_TEMP\neuN.json"
+      - name: Genauigkeit alt gegen neu
+        shell: pwsh
+        run: npx tsx scripts/compare-bench.mts "$env:RUNNER_TEMP\alt.json" "$env:RUNNER_TEMP\neuN.json"
+      - name: Echte App (Import, erstes Foto, Zwischenspeicher)
+        shell: pwsh
+        run: |
+          npm run build
+          npx electron-builder --win --x64 --dir --publish never
+          $out = Join-Path $env:RUNNER_TEMP "appbench"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $p = Start-Process -FilePath "release\win-unpacked\Lichtkammer.exe" -ArgumentList "--smoke-test=$out", "--bench-dir=$env:RUNNER_TEMP\fotos" -PassThru
+          if (-not $p.WaitForExit(900000)) { $p.Kill(); throw "App-Messung: Zeitüberschreitung" }
+          Get-Content (Join-Path $out "import-bench.json") -Raw | Write-Host
+          if (-not ((Get-Content (Join-Path $out "import-bench.json") -Raw | ConvertFrom-Json).ok)) { throw "App-Messung fehlgeschlagen" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: messung
+          path: |
+            ${{ runner.temp }}/alt.json
+            ${{ runner.temp }}/neu1.json
+            ${{ runner.temp }}/neuN.json
+            ${{ runner.temp }}/appbench/import-bench.json

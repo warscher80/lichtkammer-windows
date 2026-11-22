@@ -25,6 +25,10 @@ Windows 10 und 11, 64 Bit. Keine weiteren Programme nötig.
 Zoom mit dem Mausrad, Doppelklick für 100 %, Bild mit der Maus verschieben. „Vorher/Nachher“ zeigt den Vergleich, die Taste **V** gedrückt halten zeigt das Original.
 
 Originale werden nie verändert. Alle Einstellungen werden pro Foto gespeichert.
+
+**Schneller Import:** Fotos erscheinen, sobald sie analysiert sind, und die App bleibt bedienbar (Fortschritt mit Restzeit oben). Die Analyse läuft auf allen Prozessorkernen; bereits bekannte Fotos (gleicher Pfad, Größe und Änderungszeit) werden aus einem Zwischenspeicher übernommen und sind sofort da.
+
+**Updates:** Lichtkammer sucht beim Start nach einer neuen Version, lädt sie im Hintergrund und zeigt oben „Neue Version verfügbar – Jetzt neu starten und aktualisieren“. Unten rechts steht „Nach Updates suchen“, ebenso im Menü „Hilfe“.
 Unscharfe Bilder und Duplikate landen automatisch unter „Aussortiert“ und lassen sich wiederherstellen.
 
 ## Entwickeln
@@ -34,6 +38,7 @@ npm install
 npm run dev        # App starten
 npm run test       # Unit-Tests der Bildpipeline
 npm run verify     # Prüfung mit den Beispielbildern
+npm run bench -- <Ordner> --workers=7   # Import-Geschwindigkeit messen (Testfotos: npm run bench:make -- <Ordner> 600)
 npm run dist:win   # Installer bauen (unter Windows)
 ```
 

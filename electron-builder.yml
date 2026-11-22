@@ -36,6 +36,13 @@ asarUnpack:
 # APPLE_APP_SPECIFIC_PASSWORD und APPLE_TEAM_ID gesetzt sind, oder
 # APPLE_API_KEY, APPLE_API_KEY_ID und APPLE_API_ISSUER.
 # Ohne Zertifikat bleibt der Build unsigniert. Siehe README.
+# Updates kommen aus den Releases des öffentlichen Repos (latest.yml + Blockmap liegen daneben).
+publish:
+  provider: github
+  owner: warscher80
+  repo: lichtkammer-windows
+  releaseType: release
+
 win:
   executableName: Lichtkammer
   target:

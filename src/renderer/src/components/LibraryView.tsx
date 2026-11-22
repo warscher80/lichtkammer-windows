@@ -1,7 +1,7 @@
-import { useEffect, type ReactNode } from 'react'
+import { memo, useEffect, type ReactNode } from 'react'
 import { FolderOpen, Images, Sparkles } from 'lucide-react'
 import type { PhotoRecord, Settings } from '../../../shared/types'
-import { editKey } from '../../../shared/types'
+import { thumbUrl } from '@renderer/lib/thumb'
 import { Button } from '@renderer/components/ui/button'
 import { Slider } from '@renderer/components/ui/slider'
 import { formatPixels, formatScore } from '@renderer/lib/format'
@@ -11,7 +11,6 @@ interface LibraryViewProps {
   photos: PhotoRecord[]
   settings: Settings
   selectedId: string | null
-  thumbs: Record<string, string>
   onSelect: (id: string) => void
   onOpen: (id: string) => void
   onSettings: (settings: Settings) => void
@@ -114,9 +113,9 @@ export function LibraryView(props: LibraryViewProps) {
                 key={photo.id}
                 photo={photo}
                 selected={photo.id === props.selectedId}
-                src={props.thumbs[`${photo.id}:${editKey(photo.edits)}`]}
-                onSelect={() => props.onSelect(photo.id)}
-                onOpen={() => props.onOpen(photo.id)}
+                src={thumbUrl(photo)}
+                onSelect={props.onSelect}
+                onOpen={props.onOpen}
               />
             ))}
           </div>
@@ -164,12 +163,12 @@ function Threshold(props: {
   )
 }
 
-function PhotoTile(props: {
+const PhotoTile = memo(function PhotoTile(props: {
   photo: PhotoRecord
   selected: boolean
-  src?: string
-  onSelect: () => void
-  onOpen: () => void
+  src: string
+  onSelect: (id: string) => void
+  onOpen: (id: string) => void
 }) {
   return (
     <button
@@ -179,15 +178,11 @@ function PhotoTile(props: {
         'overflow-hidden rounded-lg bg-[#0c0d10] text-left ring-1 transition',
         props.selected ? 'ring-brass' : 'ring-white/10 hover:ring-white/25'
       )}
-      onClick={props.onSelect}
-      onDoubleClick={props.onOpen}
+      onClick={() => props.onSelect(props.photo.id)}
+      onDoubleClick={() => props.onOpen(props.photo.id)}
     >
       <div className="flex aspect-[3/2] items-center justify-center">
-        {props.src ? (
-          <img src={props.src} alt="" className="h-full w-full object-contain" />
-        ) : (
-          <div className="h-full w-full animate-pulse bg-white/5" />
-        )}
+        <img src={props.src} alt="" loading="lazy" decoding="async" className="h-full w-full object-contain" />
       </div>
       <div className="flex items-center justify-between gap-2 px-2.5 py-2">
         <div className="min-w-0">
@@ -207,7 +202,15 @@ function PhotoTile(props: {
       </div>
     </button>
   )
-}
+}, (a, b) =>
+  a.src === b.src &&
+  a.selected === b.selected &&
+  a.onSelect === b.onSelect &&
+  a.onOpen === b.onOpen &&
+  a.photo.fileName === b.photo.fileName &&
+  a.photo.sharpnessScore === b.photo.sharpnessScore &&
+  a.photo.developedFrom === b.photo.developedFrom
+)
 
 function EmptyLibrary(props: {
   total: number

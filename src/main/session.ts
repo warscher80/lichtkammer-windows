@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
@@ -24,28 +24,38 @@ import {
   type Settings
 } from '../shared/types'
 
+/** Erhöhen, wenn sich die Analyse ändert: alte Zwischenspeicher-Einträge werden dann ignoriert. */
+const ANALYSIS_VERSION = 2
+
 const IDLE: JobProgress = { active: false, phase: 'idle', current: 0, total: 0, label: '' }
 
 export class Session {
   private catalog: Catalog = { version: 1, settings: { ...DEFAULT_SETTINGS }, photos: [] }
   private saveTimer: NodeJS.Timeout | null = null
   private busy = false
+  private importing = false
+  /** Zahlen des letzten Imports (Rauchtest und Fehlersuche). */
+  lastImport = { added: 0, cached: 0, analyzed: 0, seconds: 0 }
+  private importPending: string[] = []
   private cancelRequested = false
   private readonly catalogPath: string
   private readonly thumbDir: string
+  private readonly analysisDir: string
 
   constructor(
-    private readonly pool: ImagePool,
+    readonly pool: ImagePool,
     private readonly emit: (channel: string, payload: unknown) => void,
     private readonly getWindow: () => BrowserWindow | null
   ) {
     const root = app.getPath('userData')
     this.catalogPath = join(root, 'catalog.json')
     this.thumbDir = join(root, 'cache', 'thumbs')
+    this.analysisDir = join(root, 'cache', 'analysis')
   }
 
   async init(): Promise<void> {
     await mkdir(this.thumbDir, { recursive: true })
+    await mkdir(this.analysisDir, { recursive: true })
     try {
       const raw = await readFile(this.catalogPath, 'utf8')
       const parsed = JSON.parse(raw) as Catalog
@@ -112,56 +122,157 @@ export class Session {
     await this.importPaths([directory])
   }
 
+  /**
+   * Import: Fotos erscheinen, sobald sie analysiert sind (mehrere gleichzeitig auf allen Kernen).
+   * Bereits bekannte Dateien (gleicher Pfad, gleiche Größe, gleiche Änderungszeit) kommen aus dem
+   * Zwischenspeicher und brauchen keine neue Analyse. Die App bleibt währenddessen bedienbar.
+   */
   async importPaths(paths: string[]): Promise<void> {
     const accepted = paths.filter((target) => isImportablePath(target))
+    if (accepted.length === 0) return
     if (this.busy) {
-      this.notice('info', 'Es läuft bereits ein Vorgang.')
+      this.notice('info', 'Es läuft bereits ein Export. Bitte danach importieren.')
       return
     }
-    this.busy = true
+    this.importPending.push(...accepted)
+    if (this.importing) {
+      this.notice('info', 'Weitere Fotos wurden zur laufenden Analyse hinzugefügt.')
+      return
+    }
+    this.importing = true
     this.cancelRequested = false
-    const files = await collectImages(accepted)
-    const known = new Set(this.catalog.photos.map((photo) => photo.sourcePath))
-    const fresh = files.filter((file) => !known.has(file))
-    const skipped = files.length - fresh.length
-    const failed: string[] = []
-    let added = 0
+    const stats = { added: 0, skipped: 0, cached: 0, failed: [] as string[], analyzed: 0 }
+    const started = Date.now()
+    let finishedCount = 0
+    let totalCount = 0
+    let lastFlush = 0
+    let lastSave = Date.now()
+    let dirty = false
 
-    for (let index = 0; index < fresh.length; index += 1) {
-      if (this.cancelRequested) break
-      const filePath = fresh[index]
+    const flush = async (force: boolean): Promise<void> => {
+      const now = Date.now()
+      const interval = 280 + this.catalog.photos.length * 0.7
+      if (!force && now - lastFlush < interval) return
+      lastFlush = now
+      if (dirty) {
+        this.catalog.photos = applyCulling(this.catalog.photos, this.catalog.settings)
+        dirty = false
+        this.emit('catalog:update', this.catalog)
+      }
+      const remaining = totalCount - finishedCount
+      const elapsed = (now - started) / 1000
+      const eta = stats.analyzed >= 6 && remaining > 0 ? Math.round((elapsed / stats.analyzed) * remaining) : null
       this.progress({
         active: true,
         phase: 'import',
-        current: index + 1,
-        total: fresh.length,
-        label: basename(filePath)
+        current: finishedCount,
+        total: totalCount,
+        label: '',
+        etaSeconds: remaining === 0 ? 0 : eta,
+        cached: stats.cached
       })
-      try {
-        const analyzed = await this.pool.analyze(filePath)
-        const info = await stat(filePath)
-        const photo = this.createPhoto(filePath, info.size, analyzed)
-        await writeFile(join(this.thumbDir, `${photo.id}.jpg`), analyzed.thumb)
-        await writeFile(join(this.thumbDir, `${photo.id}.txt`), editKey(photo.edits))
-        this.catalog.photos.push(photo)
-        added += 1
-      } catch (error) {
-        failed.push(`${basename(filePath)}: ${shortError(error)}`)
+      if (force || now - lastSave > 6000) {
+        lastSave = now
+        await this.persist()
       }
     }
 
-    this.catalog.photos = applyCulling(this.catalog.photos, this.catalog.settings)
-    await this.persist()
-    this.emit('catalog:update', this.catalog)
-    this.progress(IDLE)
-    this.busy = false
+    try {
+      while (this.importPending.length > 0 && !this.cancelRequested) {
+        const batch = this.importPending.splice(0)
+        const files = await collectImages(batch)
+        const known = new Set(this.catalog.photos.map((photo) => photo.sourcePath))
+        const queued = new Set<string>()
+        const fresh = files.filter((file) => {
+          if (known.has(file) || queued.has(file)) return false
+          queued.add(file)
+          return true
+        })
+        stats.skipped += files.length - fresh.length
+        totalCount += fresh.length
+        let next = 0
+        const worker = async (): Promise<void> => {
+          while (!this.cancelRequested) {
+            const index = next
+            next += 1
+            if (index >= fresh.length) return
+            const filePath = fresh[index]
+            try {
+              const info = await stat(filePath)
+              const hit = await this.readAnalysisCache(filePath, info.size, info.mtimeMs)
+              const analyzed = hit ?? (await this.pool.analyze(filePath))
+              if (hit) stats.cached += 1
+              else {
+                stats.analyzed += 1
+                void this.writeAnalysisCache(filePath, info.size, info.mtimeMs, analyzed)
+              }
+              const photo = this.createPhoto(filePath, info.size, analyzed)
+              await writeFile(join(this.thumbDir, `${photo.id}.jpg`), analyzed.thumb)
+              await writeFile(join(this.thumbDir, `${photo.id}.txt`), editKey(photo.edits))
+              this.catalog.photos.push(photo)
+              stats.added += 1
+              dirty = true
+            } catch (error) {
+              stats.failed.push(`${basename(filePath)}: ${shortError(error)}`)
+            }
+            finishedCount += 1
+            await flush(false)
+          }
+        }
+        const lanes = Math.max(2, this.pool.size + 1)
+        await Promise.all(Array.from({ length: lanes }, () => worker()))
+      }
+    } finally {
+      dirty = true
+      this.importing = false
+      await flush(true)
+      this.progress(IDLE)
+    }
 
-    const parts = [`${added} neue Fotos`]
-    if (skipped > 0) parts.push(`${skipped} bereits vorhanden`)
+    const parts = [`${stats.added} neue Fotos`]
+    if (stats.cached > 0) parts.push(`${stats.cached} aus dem Zwischenspeicher`)
+    if (stats.skipped > 0) parts.push(`${stats.skipped} bereits vorhanden`)
     if (this.cancelRequested) parts.push('abgebrochen')
-    this.notice(failed.length ? 'error' : 'info', `${parts.join(', ')}. Originale bleiben unberührt.`)
-    if (failed.length) {
-      this.notice('error', `Nicht lesbar: ${failed.slice(0, 3).join(' · ')}`)
+    const seconds = Math.max(1, Math.round((Date.now() - started) / 1000))
+    this.lastImport = { added: stats.added, cached: stats.cached, analyzed: stats.analyzed, seconds: (Date.now() - started) / 1000 }
+    this.notice(stats.failed.length ? 'error' : 'info', `${parts.join(', ')} in ${seconds} s. Originale bleiben unberührt.`)
+    if (stats.failed.length) {
+      this.notice('error', `Nicht lesbar: ${stats.failed.slice(0, 3).join(' · ')}`)
+    }
+  }
+
+  private analysisKey(filePath: string, size: number, mtimeMs: number): string {
+    return createHash('sha1').update(`${ANALYSIS_VERSION}|${filePath}|${size}|${Math.round(mtimeMs)}`).digest('hex')
+  }
+
+  private async readAnalysisCache(filePath: string, size: number, mtimeMs: number): Promise<Awaited<ReturnType<ImagePool['analyze']>> | null> {
+    const key = this.analysisKey(filePath, size, mtimeMs)
+    try {
+      const [json, thumb] = await Promise.all([
+        readFile(join(this.analysisDir, `${key}.json`), 'utf8'),
+        readFile(join(this.analysisDir, `${key}.jpg`))
+      ])
+      const data = JSON.parse(json) as Awaited<ReturnType<ImagePool['analyze']>>
+      if (typeof data.sharpness !== 'number' || typeof data.hash !== 'string') return null
+      return { ...data, thumb }
+    } catch {
+      return null
+    }
+  }
+
+  private async writeAnalysisCache(
+    filePath: string,
+    size: number,
+    mtimeMs: number,
+    analyzed: Awaited<ReturnType<ImagePool['analyze']>>
+  ): Promise<void> {
+    try {
+      const key = this.analysisKey(filePath, size, mtimeMs)
+      const { thumb, ...rest } = analyzed
+      await writeFile(join(this.analysisDir, `${key}.jpg`), thumb)
+      await writeFile(join(this.analysisDir, `${key}.json`), JSON.stringify(rest))
+    } catch {
+      /* Zwischenspeicher ist optional. */
     }
   }
 
@@ -300,30 +411,40 @@ export class Session {
     return result
   }
 
-  async thumb(id: string): Promise<string> {
-    const photo = this.requirePhoto(id)
+  /** Vorschaubild als JPEG-Bytes (für das lkthumb-Protokoll). Rendert nur, wenn die Bearbeitung neuer ist. */
+  async thumbBytes(id: string): Promise<Buffer | null> {
+    const photo = this.catalog.photos.find((item) => item.id === id)
+    if (!photo) return null
     const file = join(this.thumbDir, `${photo.id}.jpg`)
     const keyFile = join(this.thumbDir, `${photo.id}.txt`)
-    const key = editKey(photo.edits)
+    const edits = photo.edits
+    const key = editKey(edits)
     let current = ''
     try {
       current = await readFile(keyFile, 'utf8')
     } catch {
       current = ''
     }
-    if (current !== key || !existsSync(file)) {
-      const rendered = await this.pool.render({
-        filePath: photo.sourcePath,
-        edits: photo.edits,
-        maxEdge: 480,
-        format: 'jpeg',
-        quality: 76
-      })
-      await writeFile(file, rendered.buffer)
-      await writeFile(keyFile, key)
+    if (current === key) {
+      try {
+        return await readFile(file)
+      } catch {
+        /* neu rendern */
+      }
     }
-    const bytes = await readFile(file)
-    return `data:image/jpeg;base64,${bytes.toString('base64')}`
+    try {
+      const rendered = await this.pool.render(
+        { filePath: photo.sourcePath, edits, maxEdge: 480, format: 'jpeg', quality: 78 },
+        { affinity: photo.sourcePath, supersede: `thumb:${photo.id}` }
+      )
+      void writeFile(file, rendered.buffer)
+        .then(() => writeFile(keyFile, key))
+        .catch(() => undefined)
+      return Buffer.from(rendered.buffer)
+    } catch (error) {
+      if (error instanceof SupersededError) return null
+      throw error
+    }
   }
 
   async chooseOutputDir(): Promise<string | null> {

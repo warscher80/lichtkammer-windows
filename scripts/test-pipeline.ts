@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import { adjustHsl, bandValue, geometryExtract, skyMask, straightenScale } from '../src/main/engine/develop'
-import { renderImage, renderLooks } from '../src/main/engine/process'
+import { analyzeFile, renderImage, renderLooks } from '../src/main/engine/process'
 import { effectiveEdits, findLook, LOOKS, monochromeAmount } from '../src/shared/looks'
 import { cloneEdits, editKey, NEUTRAL_EDITS, sanitizeEdits, type EditParams } from '../src/shared/types'
 
@@ -239,6 +239,32 @@ test('Große JPEGs (48 MP): Vorschau schnell, Export voll', async () => {
   console.log(`    Export 48 MP mit Look, HSL, Zuschnitt: ${Date.now() - t2} ms, ${full.width}×${full.height}`)
   assert.equal(full.width, 6400)
   assert.equal(full.height, 4800)
+})
+
+test('Analyse: JPEG und RAW liefern Schärfe, Hashes, Vorschau', async () => {
+  const jpeg = await analyzeFile(sample)
+  assert.equal(jpeg.developedFrom, 'raster')
+  assert.ok(jpeg.sharpnessScore >= 0 && jpeg.sharpnessScore <= 100)
+  assert.equal(jpeg.hash.length, 16)
+  assert.equal(jpeg.pHash.length, 16)
+  assert.equal(jpeg.contentHash.length, 64)
+  const meta = await sharp(jpeg.thumb).metadata()
+  assert.ok(Math.max(meta.width ?? 0, meta.height ?? 0) <= 480)
+  const nef = await analyzeFile(join(process.cwd(), 'beispiele', '13-nikon-d70s.NEF'))
+  assert.equal(nef.developedFrom, 'sensor')
+  assert.equal(nef.width, 3008)
+  const sharpImage = await analyzeFile(join(process.cwd(), 'beispiele', '01-fjord-scharf.jpg'))
+  const blurImage = await analyzeFile(join(process.cwd(), 'beispiele', '06-roehre-unscharf.jpg'))
+  assert.ok(sharpImage.sharpnessScore > 60 && blurImage.sharpnessScore < 25, `${sharpImage.sharpnessScore} / ${blurImage.sharpnessScore}`)
+  const copy = await analyzeFile(join(process.cwd(), 'beispiele', '02-fjord-kopie.jpg'))
+  assert.equal(copy.contentHash, sharpImage.contentHash)
+})
+
+test('Analyse: kaputte Datei meldet Fehler statt zu hängen', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'lk-'))
+  const bad = join(dir, 'kaputt.jpg')
+  await writeFile(bad, Buffer.from('das ist kein Bild'))
+  await assert.rejects(analyzeFile(bad))
 })
 
 async function main(): Promise<void> {

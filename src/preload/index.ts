@@ -9,7 +9,8 @@ import type {
   JobProgress,
   Notice,
   PreviewPayload,
-  Settings
+  Settings,
+  UpdateState
 } from '../shared/types'
 
 const api = {
@@ -31,7 +32,6 @@ const api = {
   ): Promise<PreviewPayload | null> => ipcRenderer.invoke('preview', id, edits, maxEdge, options ?? {}),
   lookPreviews: (id: string, edits: EditParams): Promise<string[] | null> => ipcRenderer.invoke('looks', id, edits),
   saveAll: (): Promise<ExportResult | null> => ipcRenderer.invoke('save:all'),
-  thumb: (id: string): Promise<string> => ipcRenderer.invoke('thumb', id),
   chooseOutputDir: (): Promise<string | null> => ipcRenderer.invoke('dialog:directory'),
   exportPhotos: (options: ExportOptions): Promise<ExportResult> => ipcRenderer.invoke('export', options),
   copyCulled: (): Promise<CopyResult> => ipcRenderer.invoke('culled:copy'),
@@ -40,6 +40,10 @@ const api = {
   onCatalog: (callback: (catalog: Catalog) => void): (() => void) => subscribe('catalog:update', callback),
   onProgress: (callback: (progress: JobProgress) => void): (() => void) => subscribe('job:progress', callback),
   onNotice: (callback: (notice: Notice) => void): (() => void) => subscribe('notice', callback),
+  getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:get'),
+  checkForUpdates: (): Promise<UpdateState> => ipcRenderer.invoke('update:check'),
+  installUpdate: (): Promise<void> => ipcRenderer.invoke('update:install'),
+  onUpdateState: (callback: (state: UpdateState) => void): (() => void) => subscribe('update:state', callback),
   onExportRequest: (callback: () => void): (() => void) => subscribe('menu:export', callback)
 }
 

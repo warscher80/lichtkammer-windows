@@ -1,5 +1,7 @@
-# Baut den Windows-Installer, prüft die Bildpipeline und startet die App
-# einmal als Rauchtest. Keine Secrets nötig.
+# Baut den Windows-Installer, prüft die Bildpipeline, startet die App als Rauchtest,
+# veröffentlicht Installer + Update-Dateien als Release und testet danach das automatische Update
+# (eine ältere installierte Version muss sich selbst auf die neue aktualisieren).
+# Keine Secrets nötig.
 name: Windows
 
 on:
@@ -7,9 +9,16 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - "README.md"
+      - ".github/workflows/bench.yml"
 
 permissions:
   contents: write
+
+env:
+  # Hauptversion 1.2, die letzte Stelle zählt die Läufe: so wächst die Version mit jedem Release.
+  APP_VERSION: 1.2.${{ github.run_number }}
 
 jobs:
   windows:
@@ -24,10 +33,21 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Version setzen
+        run: npm version $env:APP_VERSION --no-git-tag-version --allow-same-version
       - run: npm run typecheck
       - run: npm run test
       - run: npm run verify
       - run: npm run dist:win
+      - name: Update-Dateien vorhanden?
+        shell: pwsh
+        run: |
+          Get-ChildItem release | Select-Object Name, Length
+          foreach ($f in @("Lichtkammer-Setup.exe", "Lichtkammer-Setup.exe.blockmap", "latest.yml")) {
+            if (-not (Test-Path "release\$f")) { throw "Fehlt: $f" }
+          }
+          Get-Content release\latest.yml
+          if (-not (Select-String -Path release\latest.yml -Pattern "version: $env:APP_VERSION" -Quiet)) { throw "latest.yml hat die falsche Version" }
       - name: Rauchtest (App starten, Beispiele importieren, bearbeiten, exportieren)
         shell: pwsh
         run: |
@@ -45,15 +65,20 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1.${{ github.run_number }}
-          name: Lichtkammer für Windows 1.1.${{ github.run_number }}
+          tag_name: v${{ env.APP_VERSION }}
+          name: Lichtkammer für Windows ${{ env.APP_VERSION }}
           body: |
-            Lichtkammer für Windows (64 Bit, Windows 10 und 11).
+            Lichtkammer für Windows ${{ env.APP_VERSION }} (64 Bit, Windows 10 und 11).
 
             Herunterladen: Lichtkammer-Setup.exe unten anklicken, dann die Datei öffnen.
             Windows SmartScreen warnt beim ersten Start, weil der Installer nicht signiert ist:
             „Weitere Informationen“ anklicken, dann „Trotzdem ausführen“.
-          files: release/Lichtkammer-Setup.exe
+
+            Ab dieser Version aktualisiert sich Lichtkammer selbst (Hinweis oben im Fenster, oder unten „Nach Updates suchen“).
+          files: |
+            release/Lichtkammer-Setup.exe
+            release/Lichtkammer-Setup.exe.blockmap
+            release/latest.yml
           make_latest: true
       - uses: actions/upload-artifact@v4
         if: always()
@@ -61,3 +86,69 @@ jobs:
         with:
           name: smoke
           path: ${{ runner.temp }}/smoke
+
+  update-test:
+    name: Update-Test (alte Version aktualisiert sich)
+    needs: windows
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Alte Version 1.1.9 bauen (gleicher Code, niedrigere Nummer)
+        run: |
+          npm run build
+          npx electron-builder --win --x64 --publish never "-c.extraMetadata.version=1.1.9" "-c.directories.output=release-old"
+      - name: Alte Version still installieren
+        shell: pwsh
+        run: |
+          Start-Process -FilePath "release-old\Lichtkammer-Setup.exe" -ArgumentList "/S" -Wait
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter "Lichtkammer.exe" | Select-Object -First 1
+          if (-not $exe) { throw "Lichtkammer.exe nicht installiert" }
+          "EXE=$($exe.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host "Installiert: $($exe.FullName) Version $($exe.VersionInfo.ProductVersion)"
+          if ($exe.VersionInfo.ProductVersion -ne "1.1.9") { throw "Falsche Startversion" }
+      - name: Update prüfen, laden und still installieren
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "update"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $p = Start-Process -FilePath $env:EXE -ArgumentList "--update-test=$out" -PassThru
+          if (-not $p.WaitForExit(360000)) { $p.Kill(); throw "Update-Test: Zeitüberschreitung" }
+          Get-Content (Join-Path $out "update-test.json") -Raw | Write-Host
+          $report = Get-Content (Join-Path $out "update-test.json") -Raw | ConvertFrom-Json
+          if (-not $report.ok) { throw "Kein Update gefunden oder geladen" }
+          # Der Installer läuft nach dem Beenden der App im Hintergrund.
+          $deadline = (Get-Date).AddSeconds(180)
+          $version = ""
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
+            $version = (Get-Item $env:EXE).VersionInfo.ProductVersion
+            if ($version -ne "1.1.9") { break }
+          }
+          Write-Host "Version nach dem Update: $version (erwartet $($report.to))"
+          if ($version -ne $report.to) { throw "Update nicht installiert: $version" }
+          Start-Sleep -Seconds 5
+      - name: Aktualisierte App starten (Rauchtest)
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "smoke-updated"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $p = Start-Process -FilePath $env:EXE -ArgumentList "--smoke-test=$out" -PassThru
+          if (-not $p.WaitForExit(240000)) { $p.Kill(); throw "Rauchtest: Zeitüberschreitung" }
+          $report = Get-Content (Join-Path $out "smoke.json") -Raw
+          Write-Host $report
+          if (-not ($report | ConvertFrom-Json).ok) { throw "Rauchtest nach dem Update fehlgeschlagen" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: update-test
+          path: |
+            ${{ runner.temp }}/update
+            ${{ runner.temp }}/smoke-updated

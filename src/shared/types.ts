@@ -129,6 +129,21 @@ export interface JobProgress {
   current: number
   total: number
   label: string
+  /** Geschätzte Restzeit in Sekunden (nur Import), sobald genug gemessen wurde. */
+  etaSeconds?: number | null
+  /** Bereits bekannte Fotos, die ohne neue Analyse übernommen wurden. */
+  cached?: number
+}
+
+export type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'none' | 'error' | 'unsupported'
+
+export interface UpdateState {
+  status: UpdateStatus
+  currentVersion: string
+  /** Version, die gerade geladen wird oder bereitliegt. */
+  version?: string
+  percent?: number
+  message?: string
 }
 
 export interface Notice {

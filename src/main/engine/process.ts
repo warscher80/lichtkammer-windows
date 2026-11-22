@@ -42,23 +42,54 @@ for (let value = 0; value < 256; value += 1) {
     channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4)
 }
 
+/** Kantenlänge der Analysegröße: Schärfe, Hashes und Statistik werden hier gemessen. */
+const ANALYSIS_EDGE = 1440
+/** Kantenlänge der Listenvorschau. */
+const THUMB_EDGE = 480
+
+/**
+ * Analysiert ein Foto in einem Durchgang: Datei einmal lesen, einmal verkleinert dekodieren
+ * (JPEG: Shrink-on-load), daraus Schärfe, Hashes, Statistik, Automatik und Vorschau ableiten.
+ */
 export async function analyzeFile(filePath: string): Promise<AnalyzeResult> {
   const file = await readFile(filePath)
-  const base = await openImage(filePath, 1440)
-  const gray = await sharp(base.data, {
-    raw: { width: base.width, height: base.height, channels: 3 }
-  })
-    .resize({ width: 480, height: 480, fit: 'inside' })
-    .greyscale()
-    .raw()
-    .toBuffer({ resolveWithObject: true })
+  const base = await openImage(filePath, ANALYSIS_EDGE, file)
+  // Schärfe wie bisher auf 480 px gemessen; die RGB-Kopie in gleicher Größe dient der Vorschau.
+  const rawInput = { raw: { width: base.width, height: base.height, channels: 3 as const } }
+  const [gray, small] = await Promise.all([
+    sharp(base.data, rawInput)
+      .resize({ width: THUMB_EDGE, height: THUMB_EDGE, fit: 'inside' })
+      .greyscale()
+      .raw()
+      .toBuffer({ resolveWithObject: true }),
+    sharp(base.data, rawInput)
+      .resize({ width: THUMB_EDGE, height: THUMB_EDGE, fit: 'inside' })
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+  ])
   const sharpness = laplacianVariance(gray.data, gray.info.width, gray.info.height)
-  const hash = await differenceHashFromRgb(base.data, base.width, base.height)
-  const pHash = await perceptualHashFromRgb(base.data, base.width, base.height)
+  const [hash, pHash] = await Promise.all([
+    differenceHashFromRgb(base.data, base.width, base.height),
+    perceptualHashFromRgb(base.data, base.width, base.height)
+  ])
   const stats = measureStats(base.data)
   const score = varianceToScore(sharpness)
   const autoEdits = suggestEdits(stats, score)
-  const rendered = await renderDecoded(base, autoEdits, 'jpeg', 76)
+  const thumb = await renderDecoded(
+    {
+      data: small.data,
+      width: small.info.width,
+      height: small.info.height,
+      fullWidth: base.fullWidth,
+      fullHeight: base.fullHeight,
+      developedFrom: base.developedFrom
+    },
+    autoEdits,
+    'jpeg',
+    78,
+    false,
+    true
+  )
   return {
     width: base.fullWidth,
     height: base.fullHeight,
@@ -69,7 +100,7 @@ export async function analyzeFile(filePath: string): Promise<AnalyzeResult> {
     contentHash: createHash('sha256').update(file).digest('hex'),
     capturedAt: readCaptureTime(file),
     autoEdits,
-    thumb: rendered.buffer,
+    thumb: thumb.buffer,
     developedFrom: base.developedFrom,
     usedEmbeddedPreview: base.developedFrom === 'embedded-preview',
     camera: base.camera
@@ -158,10 +189,10 @@ interface Decoded {
   camera?: string
 }
 
-async function openImage(filePath: string, maxEdge: number): Promise<Decoded> {
+async function openImage(filePath: string, maxEdge: number, file?: Buffer): Promise<Decoded> {
   if (isSensorRaw(filePath)) {
     try {
-      const sensor = await decodeSensorRaw(filePath, maxEdge)
+      const sensor = await decodeSensorRaw(filePath, maxEdge, file)
       const sized = await fitEdge(sensor.rgb, sensor.width, sensor.height, maxEdge)
       return {
         data: sized.data,
@@ -176,11 +207,17 @@ async function openImage(filePath: string, maxEdge: number): Promise<Decoded> {
       // Keine Sensordaten (oder unbekanntes Format): eingebettete Vorschau.
     }
   }
-  const raster = await loadRaster(filePath)
-  const decoded = await decode(raster.input, maxEdge)
-  return {
-    ...decoded,
-    developedFrom: raster.usedEmbeddedPreview ? 'embedded-preview' : 'raster'
+  try {
+    const decoded = await decode(file ?? filePath, maxEdge)
+    return { ...decoded, developedFrom: 'raster' }
+  } catch (error) {
+    const bytes = file ?? (await readFile(filePath))
+    const embedded = extractLargestJpeg(bytes)
+    if (!embedded) {
+      throw new Error('Keine lesbare Bilddaten und keine eingebettete Vorschau', { cause: error })
+    }
+    const decoded = await decode(embedded, maxEdge)
+    return { ...decoded, developedFrom: 'embedded-preview' }
   }
 }
 
@@ -198,21 +235,6 @@ async function fitEdge(
     .raw()
     .toBuffer({ resolveWithObject: true })
   return { data, width: info.width, height: info.height }
-}
-
-async function loadRaster(filePath: string): Promise<{ input: string | Buffer; usedEmbeddedPreview: boolean }> {
-  try {
-    await sharp(filePath, { failOn: 'none' }).rotate().resize(8, 8, { fit: 'inside' }).raw().toBuffer()
-    return { input: filePath, usedEmbeddedPreview: false }
-  } catch {
-    const file = await readFile(filePath)
-    const embedded = extractLargestJpeg(file)
-    if (!embedded) {
-      throw new Error('Keine lesbare Bilddaten und keine eingebettete Vorschau')
-    }
-    await sharp(embedded, { failOn: 'none' }).resize(8, 8, { fit: 'inside' }).raw().toBuffer()
-    return { input: embedded, usedEmbeddedPreview: true }
-  }
 }
 
 async function decode(

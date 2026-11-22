@@ -8,7 +8,8 @@ import type {
   JobProgress,
   Notice,
   PreviewPayload,
-  Settings
+  Settings,
+  UpdateState
 } from '../shared/types'
 
 export interface LichtkammerApi {
@@ -30,7 +31,6 @@ export interface LichtkammerApi {
   ) => Promise<PreviewPayload | null>
   lookPreviews: (id: string, edits: EditParams) => Promise<string[] | null>
   saveAll: () => Promise<ExportResult | null>
-  thumb: (id: string) => Promise<string>
   chooseOutputDir: () => Promise<string | null>
   exportPhotos: (options: ExportOptions) => Promise<ExportResult>
   copyCulled: () => Promise<CopyResult>
@@ -39,6 +39,10 @@ export interface LichtkammerApi {
   onCatalog: (callback: (catalog: Catalog) => void) => () => void
   onProgress: (callback: (progress: JobProgress) => void) => () => void
   onNotice: (callback: (notice: Notice) => void) => () => void
+  getUpdateState: () => Promise<UpdateState>
+  checkForUpdates: () => Promise<UpdateState>
+  installUpdate: () => Promise<void>
+  onUpdateState: (callback: (state: UpdateState) => void) => () => void
   onExportRequest: (callback: () => void) => () => void
 }
 

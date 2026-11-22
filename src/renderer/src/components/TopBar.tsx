@@ -11,6 +11,8 @@ interface TopBarProps {
   blurry: number
   duplicates: number
   busy: boolean
+  /** Import läuft: weitere Importe sind erlaubt (Warteschlange), Export nicht. */
+  importing: boolean
   onImportFolder: () => void
   onImportFiles: () => void
   onSamples: () => void
@@ -53,15 +55,15 @@ export function TopBar(props: TopBarProps) {
         ))}
       </nav>
       <div className="ml-auto flex items-center gap-2">
-        <Button variant="quiet" onClick={props.onSamples} disabled={props.busy} title="Beispielbilder laden">
+        <Button variant="quiet" onClick={props.onSamples} disabled={props.busy && !props.importing} title="Beispielbilder laden">
           <Sparkles className="size-3.5" />
           <span className="hidden xl:inline">Beispiele</span>
         </Button>
-        <Button variant="outline" onClick={props.onImportFolder} disabled={props.busy} title="Ordner öffnen">
+        <Button variant="outline" onClick={props.onImportFolder} disabled={props.busy && !props.importing} title="Ordner öffnen">
           <FolderOpen className="size-3.5" />
           <span className="hidden xl:inline">Ordner öffnen</span>
         </Button>
-        <Button variant="outline" onClick={props.onImportFiles} disabled={props.busy} title="Fotos hinzufügen">
+        <Button variant="outline" onClick={props.onImportFiles} disabled={props.busy && !props.importing} title="Fotos hinzufügen">
           <Images className="size-3.5" />
           <span className="hidden xl:inline">Fotos hinzufügen</span>
         </Button>

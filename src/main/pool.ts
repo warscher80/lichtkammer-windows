@@ -1,3 +1,4 @@
+import { availableParallelism, cpus } from 'node:os'
 import { Worker } from 'node:worker_threads'
 import workerPath from './worker?modulePath'
 import { analyzeFile, renderImage, renderLooks, type AnalyzeResult, type RenderResult } from './engine/process'
@@ -95,7 +96,7 @@ export class ImagePool {
   private nextId = 1
   private enabled = true
 
-  constructor(size = 2) {
+  constructor(size = defaultPoolSize()) {
     try {
       for (let index = 0; index < size; index += 1) {
         const worker = new Worker(workerPath)
@@ -112,6 +113,10 @@ export class ImagePool {
       console.error('Worker konnten nicht gestartet werden', error)
       this.enabled = false
     }
+  }
+
+  get size(): number {
+    return this.enabled ? this.slots.length : 1
   }
 
   analyze(filePath: string): Promise<AnalyzeResult> {
@@ -171,7 +176,10 @@ export class ImagePool {
     }
     const slot = options.affinity ? hashString(options.affinity) % this.slots.length : undefined
     return new Promise((resolve, reject) => {
-      this.queue.push({ id, payload, resolve, reject, slot, supersede: options.supersede })
+      const job: Job = { id, payload, resolve, reject, slot, supersede: options.supersede }
+      // Bedienung (Vorschau, Vorschaubilder) geht vor der Hintergrund-Analyse.
+      if (options.supersede) this.queue.unshift(job)
+      else this.queue.push(job)
       this.pump()
     })
   }
@@ -206,6 +214,12 @@ function normalizeAnalyze(result: AnalyzeResult): AnalyzeResult {
 
 function normalizeRender(result: RenderResult): RenderResult {
   return { ...result, buffer: toBuffer(result.buffer) }
+}
+
+/** Ein Worker je Kern, einer bleibt für die Oberfläche frei (mindestens 2, höchstens 8). */
+export function defaultPoolSize(): number {
+  const cores = typeof availableParallelism === 'function' ? availableParallelism() : cpus().length
+  return Math.min(8, Math.max(2, cores - 1))
 }
 
 function hashString(text: string): number {
