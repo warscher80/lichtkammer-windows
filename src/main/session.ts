@@ -5,7 +5,7 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path
 import { app, dialog, type BrowserWindow, shell } from 'electron'
 import { applyCulling } from './engine/culling'
 import { collectImages, copyCulledFiles } from './engine/files'
-import { SupersededError, type ImagePool } from './pool'
+import { SupersededError, type ImagePool, type RawPreview } from './pool'
 import {
   cloneEdits,
   sanitizeEdits,
@@ -387,6 +387,32 @@ export class Session {
     }
   }
 
+  /**
+   * Foto in Bildschirmgröße, roh dekodiert und ohne Bearbeitung: Die Oberfläche rechnet die Bearbeitung auf der Grafikkarte.
+   * `purpose`: main (Bedienung, zuerst), tiny (kleine Platzhalter-Vorschau), prefetch (Nachbarfotos vorladen).
+   */
+  async rawPreview(id: string, edge: number, purpose: string): Promise<RawPreview | null> {
+    const photo = this.catalog.photos.find((item) => item.id === id)
+    if (!photo) return null
+    const maxEdge = clamp(Math.round(edge), 200, 4096)
+    try {
+      if (purpose === 'prefetch') {
+        return await this.pool.decode(photo.sourcePath, maxEdge, { affinity: photo.sourcePath, priority: 1 })
+      }
+      if (purpose === 'tiny') {
+        return await this.pool.decode(photo.sourcePath, maxEdge, { supersede: 'raw:tiny', priority: 2 })
+      }
+      return await this.pool.decode(photo.sourcePath, maxEdge, {
+        affinity: photo.sourcePath,
+        supersede: `raw:${purpose}:${maxEdge >= 3000 ? 'big' : 'fit'}`,
+        priority: 2
+      })
+    } catch (error) {
+      if (error instanceof SupersededError) return null
+      throw error
+    }
+  }
+
   async lookPreviews(id: string, edits: EditParams): Promise<string[] | null> {
     const photo = this.requirePhoto(id)
     try {
@@ -474,34 +500,39 @@ export class Session {
     const failed: string[] = []
     try {
       await mkdir(options.directory, { recursive: true })
-      for (let index = 0; index < selected.length; index += 1) {
-        if (this.cancelRequested) break
-        const photo = selected[index]
-        this.progress({
-          active: true,
-          phase: 'export',
-          current: index + 1,
-          total: selected.length,
-          label: photo.fileName
-        })
-        const extension = options.format === 'png' ? '.png' : '.jpg'
-        const base = photo.fileName.replace(/\.[^.]+$/, '')
-        const target = await uniqueFile(options.directory, `${base}_lichtkammer${extension}`)
-        try {
-          const rendered = await this.pool.render({
-            filePath: photo.sourcePath,
-            edits: photo.edits,
-            maxEdge: 0,
-            format: options.format,
-            quality: options.quality
-          })
-          await writeFile(target, rendered.buffer)
-          files.push(target)
-          photo.savedKey = editKey(photo.edits)
-        } catch (error) {
-          failed.push(`${photo.fileName}: ${shortError(error)}`)
+      // Mehrere Fotos gleichzeitig (jedes in einem eigenen Arbeitsprozess): deutlich schneller als eins nach dem anderen.
+      const extension = options.format === 'png' ? '.png' : '.jpg'
+      const lanes = Math.max(1, Math.min(3, this.pool.size, selected.length))
+      let next = 0
+      let done = 0
+      const reserved = new Set<string>()
+      const lane = async (): Promise<void> => {
+        while (!this.cancelRequested) {
+          const index = next
+          next += 1
+          if (index >= selected.length) return
+          const photo = selected[index]
+          this.progress({ active: true, phase: 'export', current: Math.min(selected.length, done + 1), total: selected.length, label: photo.fileName })
+          const base = photo.fileName.replace(/\.[^.]+$/, '')
+          try {
+            const target = await uniqueFile(options.directory, `${base}_lichtkammer${extension}`, reserved)
+            const rendered = await this.pool.render({
+              filePath: photo.sourcePath,
+              edits: photo.edits,
+              maxEdge: 0,
+              format: options.format,
+              quality: options.quality
+            })
+            await writeFile(target, rendered.buffer)
+            files.push(target)
+            photo.savedKey = editKey(photo.edits)
+          } catch (error) {
+            failed.push(`${photo.fileName}: ${shortError(error)}`)
+          }
+          done += 1
         }
       }
+      await Promise.all(Array.from({ length: lanes }, () => lane()))
     } finally {
       this.progress(IDLE)
       this.busy = false
@@ -620,20 +651,21 @@ function isImportablePath(target: string): boolean {
   return existsSync(target)
 }
 
-function samplesDirectory(): string | null {
+export function samplesDirectory(): string | null {
   const candidates = [join(app.getAppPath(), 'beispiele'), join(process.resourcesPath, 'beispiele')]
   return candidates.find((directory) => existsSync(directory)) ?? null
 }
 
-async function uniqueFile(directory: string, fileName: string): Promise<string> {
+async function uniqueFile(directory: string, fileName: string, reserved?: Set<string>): Promise<string> {
   const extension = extname(fileName)
   const base = fileName.slice(0, fileName.length - extension.length)
   let candidate = join(directory, fileName)
   let index = 2
-  while (existsSync(candidate)) {
+  while (existsSync(candidate) || reserved?.has(candidate)) {
     candidate = join(directory, `${base}-${index}${extension}`)
     index += 1
   }
+  reserved?.add(candidate)
   return candidate
 }
 

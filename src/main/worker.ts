@@ -1,6 +1,6 @@
 import { parentPort } from 'node:worker_threads'
 import sharp from 'sharp'
-import { analyzeFile, renderImage, renderLooks } from './engine/process'
+import { analyzeFile, decodeRaw, renderImage, renderLooks } from './engine/process'
 import type { EditParams } from '../shared/types'
 
 // Mehrere Worker laufen parallel: je Worker wenige libvips-Threads, damit sich die Kerne nicht im Weg stehen.
@@ -31,7 +31,14 @@ interface LooksMessage {
   edge: number
 }
 
-type WorkerMessage = AnalyzeMessage | RenderMessage | LooksMessage
+interface DecodeMessage {
+  id: number
+  type: 'decode'
+  filePath: string
+  maxEdge: number
+}
+
+type WorkerMessage = AnalyzeMessage | RenderMessage | LooksMessage | DecodeMessage
 
 parentPort?.on('message', (message: WorkerMessage) => {
   void handle(message)
@@ -42,6 +49,29 @@ async function handle(message: WorkerMessage): Promise<void> {
     if (message.type === 'analyze') {
       const result = await analyzeFile(message.filePath)
       parentPort?.postMessage({ id: message.id, ok: true, type: 'analyze', result })
+      return
+    }
+    if (message.type === 'decode') {
+      const decoded = await decodeRaw(message.filePath, message.maxEdge)
+      // Kopie, damit der Zwischenspeicher des Workers heil bleibt; die Kopie wandert ohne weiteres Kopieren zurück.
+      const data = new Uint8Array(decoded.data.length)
+      data.set(decoded.data)
+      parentPort?.postMessage(
+        {
+          id: message.id,
+          ok: true,
+          type: 'decode',
+          result: {
+            data,
+            width: decoded.width,
+            height: decoded.height,
+            fullWidth: decoded.fullWidth,
+            fullHeight: decoded.fullHeight,
+            developedFrom: decoded.developedFrom
+          }
+        },
+        [data.buffer]
+      )
       return
     }
     if (message.type === 'looks') {

@@ -5,9 +5,10 @@ import { suggestEdits, varianceToScore, type ImageStats } from './auto'
 import { hashToHex, perceptualHashFromGray } from './hash'
 import { decodeSensorRaw, isSensorRaw } from './rawDecode'
 import { extractLargestJpeg } from './rawExtract'
+import { buildChannelLut } from '../../shared/color'
 import { effectiveEdits, LOOKS, monochromeAmount } from '../../shared/looks'
 import { hasColorWork, type DevelopedFrom, type EditParams } from '../../shared/types'
-import { adjustHsl, geometryExtract, needsGeometry, rotatedSize, skyMask } from './develop'
+import { adjustHsl, geometryExtract, needsGeometry, rotatedSize, skyMask } from '../../shared/develop'
 
 sharp.cache({ files: 16, memory: 64 })
 
@@ -33,13 +34,6 @@ export interface RenderResult {
   height: number
   histogram: number[]
   mime: 'image/jpeg' | 'image/png'
-}
-
-const LINEAR = new Float32Array(256)
-for (let value = 0; value < 256; value += 1) {
-  const channel = value / 255
-  LINEAR[value] =
-    channel <= 0.04045 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4)
 }
 
 /** Kantenlänge der Analysegröße: Schärfe, Hashes und Statistik werden hier gemessen. */
@@ -179,7 +173,7 @@ export async function channelMeans(
   return { r, g, b, y: 0.2126 * r + 0.7152 * g + 0.0722 * b }
 }
 
-interface Decoded {
+export interface Decoded {
   data: Buffer
   width: number
   height: number
@@ -407,6 +401,26 @@ function percentile(bins: Uint32Array, total: number, ratio: number): number {
   return 1
 }
 
+/** Gleiche Rechnung wie renderDecoded, aber als rohe RGB-Pixel (Referenz für den Grafikkarten-Vergleich). */
+export async function renderRaw(
+  decoded: Decoded,
+  edits: EditParams,
+  ignoreCrop = false
+): Promise<{ data: Buffer; width: number; height: number; histogram: number[] }> {
+  const effective = effectiveEdits(edits)
+  const mono = monochromeAmount(edits)
+  const geo = await applyGeometry(decoded.data, decoded.width, decoded.height, effective, ignoreCrop)
+  const sky = effective.skyEnhance ? await buildSkyMask(geo.data, geo.width, geo.height) : null
+  const colored = applyColor(geo.data, effective, mono, sky)
+  const detailed = await applyDetail(colored.pixels, geo.width, geo.height, effective)
+  return { data: detailed, width: geo.width, height: geo.height, histogram: colored.histogram }
+}
+
+/** Dekodiertes Foto in Bildschirmgröße (roh, RGB) für die Grafikkarten-Vorschau. */
+export async function decodeRaw(filePath: string, maxEdge: number): Promise<Decoded> {
+  return openImageCached(filePath, maxEdge)
+}
+
 async function renderDecoded(
   decoded: Decoded,
   edits: EditParams,
@@ -559,43 +573,6 @@ export function applyColor(
   }
 }
 
-export function buildChannelLut(edits: EditParams, channel: 'r' | 'g' | 'b'): Uint8ClampedArray {
-  const temperature = edits.temperature / 100
-  const tint = edits.tint / 100
-  const exposure = Math.pow(2, edits.exposure)
-  let gain = exposure
-  if (channel === 'r') gain *= (1 + temperature * 0.5) * (1 + Math.max(0, tint) * 0.08)
-  if (channel === 'g') gain *= 1 - tint * 0.2
-  if (channel === 'b') gain *= (1 - temperature * 0.5) * (1 + Math.max(0, tint) * 0.08)
-  if (tint < 0 && channel !== 'g') gain *= 1 + tint * 0.04
-  const shadow = edits.shadows / 100
-  const highlight = edits.highlights / 100
-  const contrast = 1 + edits.contrast / 100
-  const whites = (edits.whites ?? 0) / 100
-  const blacks = (edits.blacks ?? 0) / 100
-  const lut = new Uint8ClampedArray(256)
-  for (let value = 0; value < 256; value += 1) {
-    let linear = LINEAR[value] * gain
-    linear = clamp01(linear)
-    let encoded = linearToSrgb(linear)
-    encoded = encoded + shadow * Math.pow(1 - encoded, 2) * 0.75
-    encoded = encoded + highlight * encoded * encoded * 0.7
-    if (highlight < 0 && encoded > 0.6) {
-      const span = 1 - 0.6
-      const t = (encoded - 0.6) / span
-      const recovered = 0.6 + (1 - Math.pow(1 - clamp01(t), 1 + -highlight * 0.9)) * span
-      encoded = encoded * 0.4 + recovered * 0.6
-    }
-    encoded = (clamp01(encoded) - 0.5) * contrast + 0.5
-    // Weiß: verschiebt den hellen Endpunkt, Schwarz den dunklen.
-    encoded = clamp01(encoded)
-    encoded = encoded + whites * 0.22 * encoded * encoded
-    encoded = encoded + blacks * 0.2 * Math.pow(1 - clamp01(encoded), 3)
-    lut[value] = Math.round(clamp01(encoded) * 255)
-  }
-  return lut
-}
-
 async function applyDetail(pixels: Buffer, width: number, height: number, edits: EditParams): Promise<Buffer> {
   const clarity = (edits.clarity ?? 0) / 100
   const sharpen = edits.sharpen / 100
@@ -642,11 +619,6 @@ function skinWeight(red: number, green: number, blue: number): number {
   const skinHue = hueUnit < 0.11 || hueUnit > 0.97
   if (!skinHue || saturation < 0.14 || saturation > 0.72 || luminance < 0.2 || luminance > 0.9) return 0
   return 0.72
-}
-
-function linearToSrgb(value: number): number {
-  if (value <= 0.0031308) return 12.92 * value
-  return 1.055 * Math.pow(value, 1 / 2.4) - 0.055
 }
 
 function clamp01(value: number): number {

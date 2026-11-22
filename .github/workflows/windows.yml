@@ -12,6 +12,7 @@ on:
     paths-ignore:
       - "README.md"
       - ".github/workflows/bench.yml"
+      - ".github/workflows/perf.yml"
 
 permissions:
   contents: write
@@ -59,6 +60,17 @@ jobs:
           $report = Get-Content (Join-Path $out "smoke.json") -Raw
           Write-Host $report
           if (-not ($report | ConvertFrom-Json).ok) { throw "Rauchtest fehlgeschlagen" }
+      - name: Grafikkarten-Vorschau gegen die CPU-Bildpipeline prüfen
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "gpu"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $p = Start-Process -FilePath "release\win-unpacked\Lichtkammer.exe" -ArgumentList "--gpu-test=$out" -PassThru
+          if (-not $p.WaitForExit(600000)) { $p.Kill(); throw "GPU-Test: Zeitüberschreitung" }
+          $report = Get-Content (Join-Path $out "gpu-test.json") -Raw
+          Write-Host $report
+          if (-not ($report | ConvertFrom-Json).ok) { throw "GPU-Test: Abweichung zu groß oder kein WebGL2 (die App fällt dann auf den CPU-Weg zurück)" }
       - name: Größe
         shell: pwsh
         run: Get-Item release\Lichtkammer-Setup.exe | Select-Object Name, Length
@@ -85,7 +97,9 @@ jobs:
         continue-on-error: true
         with:
           name: smoke
-          path: ${{ runner.temp }}/smoke
+          path: |
+            ${{ runner.temp }}/smoke
+            ${{ runner.temp }}/gpu
 
   update-test:
     name: Update-Test (alte Version aktualisiert sich)

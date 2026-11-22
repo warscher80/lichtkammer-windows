@@ -98,7 +98,7 @@ export function LibraryView(props: LibraryViewProps) {
           </section>
         )}
       </aside>
-      <div className="min-h-0 overflow-auto p-4">
+      <div data-library-scroll className="min-h-0 overflow-auto p-4">
         {kept.length === 0 ? (
           <EmptyLibrary
             total={props.photos.length}

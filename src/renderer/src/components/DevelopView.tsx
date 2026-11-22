@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Check, Crop, Maximize, RotateCcw, RotateCw, Sparkles, Sun, Undo2, ZoomIn, ZoomOut } from 'lucide-react'
 import type { CropRect, EditParams, PhotoRecord, ScalarKey } from '../../../shared/types'
 import { BAND_COLORS, BAND_NAMES, cloneEdits, editKey, NEUTRAL_EDITS } from '../../../shared/types'
@@ -8,8 +8,9 @@ import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import { Separator } from '@renderer/components/ui/separator'
 import { Slider } from '@renderer/components/ui/slider'
 import { formatEdit, formatPixels } from '@renderer/lib/format'
-import { thumbUrl } from '@renderer/lib/thumb'
 import { cn } from '@renderer/lib/utils'
+import { getEngine } from '@renderer/lib/gpu/shared'
+import type { EngineInfo } from '@renderer/lib/gpu/engine'
 
 interface Field {
   key: ScalarKey
@@ -52,6 +53,10 @@ const ASPECTS: { id: string; label: string; ratio: number | 'original' | null }[
   { id: '4:5', label: '4:5', ratio: 4 / 5 }
 ]
 
+const LOOK_TILE_W = 160
+const LOOK_TILE_H = 116
+const LOOK_COLUMNS = 4
+
 const FULL: CropRect = { x: 0, y: 0, w: 1, h: 1 }
 
 interface DevelopViewProps {
@@ -84,6 +89,11 @@ export function DevelopView(props: DevelopViewProps) {
   const [stage, setStage] = useState({ width: 800, height: 600 })
   const [looks, setLooks] = useState<string[]>([])
   const stageRef = useRef<HTMLDivElement>(null)
+  const gpuHost = useMemo(() => getEngine(), [])
+  const gpu = gpuHost?.engine ?? null
+  const [gpuInfo, setGpuInfo] = useState<EngineInfo | null>(gpu?.lastInfo ?? null)
+  const lookCanvases = useRef<(HTMLCanvasElement | null)[]>([])
+  const dims = gpu ? gpuInfo : after
 
   const edits = photo?.edits ?? NEUTRAL_EDITS
   const key = editKey(edits)
@@ -101,6 +111,20 @@ export function DevelopView(props: DevelopViewProps) {
     return () => observer.disconnect()
   }, [])
 
+  // Grafikkarten-Zeichenfläche in die Bühne einhängen.
+  useEffect(() => {
+    const element = stageRef.current
+    if (!gpuHost || !element) return
+    element.insertBefore(gpuHost.canvas, element.firstChild)
+    gpuHost.engine.onInfo = (info) => setGpuInfo(info)
+    gpuHost.engine.onHistogram = (bins) => setHistogram(bins)
+    return () => {
+      gpuHost.engine.onInfo = () => undefined
+      gpuHost.engine.onHistogram = () => undefined
+      gpuHost.canvas.remove()
+    }
+  }, [gpuHost, !photo])
+
   // Neues Foto: Ansicht zurücksetzen.
   useEffect(() => {
     setZoom(1)
@@ -114,7 +138,7 @@ export function DevelopView(props: DevelopViewProps) {
 
   // Vorher-Bild: Original ohne Farbe, aber mit gleichem Zuschnitt.
   useEffect(() => {
-    if (!photo) return
+    if (!photo || gpu) return
     let cancel = false
     const original = { ...cloneEdits(NEUTRAL_EDITS), rotate: edits.rotate, straighten: edits.straighten, crop: edits.crop }
     void window.api.preview(photo.id, original, zoom > 1.25 ? 3600 : 1700, { purpose: 'before' }).then((payload) => {
@@ -127,7 +151,7 @@ export function DevelopView(props: DevelopViewProps) {
 
   // Nachher-Bild.
   useEffect(() => {
-    if (!photo) return
+    if (!photo || gpu) return
     let cancel = false
     setLoading(true)
     const handle = window.setTimeout(
@@ -154,7 +178,7 @@ export function DevelopView(props: DevelopViewProps) {
 
   // Look-Vorschauen.
   useEffect(() => {
-    if (!photo || scrubbing) return
+    if (!photo || scrubbing || gpu) return
     let cancel = false
     const handle = window.setTimeout(() => {
       void window.api.lookPreviews(photo.id, photo.edits).then((list) => {
@@ -193,13 +217,70 @@ export function DevelopView(props: DevelopViewProps) {
     const padding = 24
     const width = Math.max(10, stage.width - padding * 2)
     const height = Math.max(10, stage.height - padding * 2)
-    const imageWidth = after?.width ?? 3
-    const imageHeight = after?.height ?? 2
+    const imageWidth = dims?.width ?? 3
+    const imageHeight = dims?.height ?? 2
     const scale = Math.min(width / imageWidth, height / imageHeight)
     const w = imageWidth * scale
     const h = imageHeight * scale
     return { left: (stage.width - w) / 2, top: (stage.height - h) / 2, width: w, height: h }
-  }, [stage, after?.width, after?.height])
+  }, [stage, dims?.width, dims?.height])
+
+  // Grafikkarte: bei jeder Änderung sofort neu zeichnen.
+  const neighbourIds = useMemo(() => {
+    if (!photo) return []
+    const index = strip.findIndex((item) => item.id === photo.id)
+    if (index < 0) return []
+    const list: string[] = []
+    for (const offset of [1, -1, 2]) {
+      const item = strip[(index + offset + strip.length * 3) % strip.length]
+      if (item && item.id !== photo.id && !list.includes(item.id)) list.push(item.id)
+    }
+    return list
+  }, [photo?.id, strip.length, strip.map((item) => item.id).join(',')])
+
+  useEffect(() => {
+    if (!gpu) return
+    gpu.setNeighbours(neighbourIds)
+  }, [gpu, neighbourIds])
+
+  useEffect(() => {
+    gpu?.setDragging(scrubbing)
+  }, [gpu, scrubbing])
+
+  useEffect(() => {
+    if (!gpu || !photo) return
+    gpu.update({
+      id: photo.id,
+      edits: photo.edits,
+      ignoreCrop: cropMode,
+      stageWidth: stage.width,
+      stageHeight: stage.height,
+      box: [fitted.left, fitted.top, fitted.width, fitted.height],
+      zoom,
+      pan: [pan.x, pan.y],
+      splitX: compare && !holdBefore && !cropMode ? split * stage.width : -1,
+      original: holdBefore && !cropMode
+    })
+  }, [gpu, photo?.id, photo?.edits, cropMode, stage, fitted, zoom, pan, compare, holdBefore, split])
+
+  // Look-Kacheln über die Grafikkarte.
+  useEffect(() => {
+    if (!gpu || !photo || !gpuInfo || cropMode) return
+    const handle = window.setTimeout(() => {
+      const tiles = gpu.renderLookTiles(photo.edits, LOOK_TILE_W, LOOK_TILE_H, LOOK_COLUMNS)
+      if (!tiles) return
+      const atlas = new ImageData(new Uint8ClampedArray(tiles.pixels), tiles.width, tiles.height)
+      LOOKS.forEach((_look, index) => {
+        const target = lookCanvases.current[index]
+        const context = target?.getContext('2d')
+        if (!target || !context) return
+        const column = index % LOOK_COLUMNS
+        const row = Math.floor(index / LOOK_COLUMNS)
+        context.putImageData(atlas, -column * LOOK_TILE_W, -row * LOOK_TILE_H, column * LOOK_TILE_W, row * LOOK_TILE_H, LOOK_TILE_W, LOOK_TILE_H)
+      })
+    }, scrubbing ? 90 : 0)
+    return () => window.clearTimeout(handle)
+  }, [gpu, photo?.id, lookBaseKey, gpuInfo, cropMode, scrubbing])
 
   if (!photo) {
     return (
@@ -267,8 +348,8 @@ export function DevelopView(props: DevelopViewProps) {
   function applyAspect(id: string): void {
     setAspect(id)
     const option = ASPECTS.find((item) => item.id === id)
-    if (!option || option.ratio === null || !after) return
-    const imageRatio = after.width / after.height
+    if (!option || option.ratio === null || !dims) return
+    const imageRatio = dims.width / dims.height
     const target = option.ratio === 'original' ? current.width / current.height : option.ratio
     // Seitenverhältnis in normierten Koordinaten.
     const normalized = target / imageRatio
@@ -325,12 +406,12 @@ export function DevelopView(props: DevelopViewProps) {
           target.addEventListener('pointerup', stop)
         }}
       >
-        {after && (
+        {!gpu && after && (
           <Layer box={fitted} transform={transform}>
             <img src={showBefore ? before || after.url : after.url} alt="Foto" draggable={false} className="h-full w-full" />
           </Layer>
         )}
-        {showCompare && before && (
+        {!gpu && showCompare && before && (
           <div className="absolute inset-0" style={{ clipPath: `inset(0 ${100 - split * 100}% 0 0)` }}>
             <Layer box={fitted} transform={transform}>
               <img src={before} alt="Vorher" draggable={false} className="h-full w-full" />
@@ -364,15 +445,15 @@ export function DevelopView(props: DevelopViewProps) {
             </span>
           </div>
         )}
-        {cropMode && after && draftCrop && (
+        {cropMode && dims && draftCrop && (
           <CropOverlay
             box={fitted}
             rect={draftCrop}
-            ratio={aspectRatioFor(aspect, current, after)}
+            ratio={aspectRatioFor(aspect, current, dims)}
             onChange={setDraftCrop}
           />
         )}
-        {!after && (
+        {!dims && (
           <div className="absolute inset-0 flex items-center justify-center text-ink-soft">
             <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/15 border-t-brass" />
           </div>
@@ -384,7 +465,7 @@ export function DevelopView(props: DevelopViewProps) {
           ) : (
             <span className="rounded bg-brass px-2 py-1 text-brass-ink">{cropMode ? 'Zuschneiden' : 'Nachher'}</span>
           )}
-          {loading && <span className="rounded bg-black/60 px-2 py-1 text-ink-soft normal-case">rechnet…</span>}
+          {!gpu && loading && <span className="rounded bg-black/60 px-2 py-1 text-ink-soft normal-case">rechnet…</span>}
         </div>
         {!cropMode && (
           <div className="absolute top-3 right-3 flex items-center gap-1 rounded-lg bg-black/60 p-1 text-[12px]">
@@ -624,7 +705,16 @@ export function DevelopView(props: DevelopViewProps) {
                     activeLook === look.id ? 'ring-brass' : 'ring-transparent group-hover:ring-white/25'
                   )}
                 >
-                  {looks[index] ? (
+                  {gpu ? (
+                    <canvas
+                      ref={(element) => {
+                        lookCanvases.current[index] = element
+                      }}
+                      width={LOOK_TILE_W}
+                      height={LOOK_TILE_H}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : looks[index] ? (
                     <img src={looks[index]} alt="" className="h-full w-full object-cover" />
                   ) : (
                     <div className="h-full animate-pulse bg-white/5" />
@@ -636,25 +726,40 @@ export function DevelopView(props: DevelopViewProps) {
           </div>
         </div>
         <div className="flex items-center gap-2 overflow-x-auto border-t border-white/5 px-3 py-2">
-          {strip.map((item) => {
-            return (
-              <button
-                key={item.id}
-                className={cn(
-                  'h-[52px] w-[74px] shrink-0 overflow-hidden rounded-md bg-black ring-1',
-                  item.id === current.id ? 'ring-2 ring-brass' : 'ring-white/10'
-                )}
-                onClick={() => props.onSelect(item.id)}
-              >
-                <img src={thumbUrl(item)} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
-              </button>
-            )
-          })}
+          {strip.map((item) => (
+            <StripThumb key={item.id} photo={item} active={item.id === current.id} onSelect={props.onSelect} />
+          ))}
         </div>
       </div>
     </div>
   )
 }
+
+/** Kleines Foto in der Leiste: das gerade bearbeitete lädt sich erst nach kurzer Ruhe neu (nicht bei jedem Reglerschritt). */
+const StripThumb = memo(function StripThumb(props: { photo: PhotoRecord; active: boolean; onSelect: (id: string) => void }) {
+  const liveKey = editKey(props.photo.edits)
+  const [settled, setSettled] = useState(liveKey)
+  useEffect(() => {
+    if (!props.active) {
+      setSettled(liveKey)
+      return
+    }
+    const handle = window.setTimeout(() => setSettled(liveKey), 700)
+    return () => window.clearTimeout(handle)
+  }, [liveKey, props.active])
+  const url = `lkthumb://photo/${props.photo.id}?k=${settled}`
+  return (
+    <button
+      className={cn(
+        'h-[52px] w-[74px] shrink-0 overflow-hidden rounded-md bg-black ring-1',
+        props.active ? 'ring-2 ring-brass' : 'ring-white/10'
+      )}
+      onClick={() => props.onSelect(props.photo.id)}
+    >
+      <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
+    </button>
+  )
+})
 
 function aspectRatioFor(
   aspect: string,

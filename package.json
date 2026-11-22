@@ -21,7 +21,8 @@
     "postinstall": "electron-builder install-app-deps",
     "test": "tsx scripts/test-pipeline.ts",
     "bench": "tsx scripts/bench-import.mts",
-    "bench:make": "tsx scripts/make-bench-set.ts"
+    "bench:make": "tsx scripts/make-bench-set.ts",
+    "perf:make": "tsx scripts/make-perf-set.ts"
   },
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",

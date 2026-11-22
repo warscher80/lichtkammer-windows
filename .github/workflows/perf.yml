@@ -1,0 +1,83 @@
+# Misst die Bedienung (Programmstart, Foto öffnen und wechseln, Look anklicken, Regler, Scrollen, Sichern)
+# mit 600 Fotos auf dem Windows-Runner: alter Stand gegen aktuellen Stand, dazu der Grafikkarten-Vergleich.
+# Von Hand starten. Der Runner hat keine echte Grafikkarte (Software-Grafik): die Zahlen sind der ungünstigste Fall.
+name: Tempo-Messung
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_ref:
+        description: "Alter Stand mit Mess-Harness (Zweig oder Commit)"
+        default: "perf-baseline"
+
+jobs:
+  perf:
+    name: Tempo (alt gegen neu)
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Testfotos erzeugen
+        shell: pwsh
+        run: |
+          npx tsx scripts/make-perf-set.ts "$env:RUNNER_TEMP\fotos"
+          Write-Host "Dateien:" (Get-ChildItem "$env:RUNNER_TEMP\fotos").Count
+          Write-Host "Kerne: $env:NUMBER_OF_PROCESSORS"
+      - name: Neuen Stand bauen
+        shell: pwsh
+        run: |
+          npm run build
+          npx electron-builder --win --x64 --dir --publish never "-c.directories.output=release-neu"
+      - name: Alten Stand bauen
+        shell: pwsh
+        run: |
+          git worktree add ..\alt ${{ inputs.old_ref }}
+          New-Item -ItemType Junction -Path ..\alt\node_modules -Target "$PWD\node_modules" | Out-Null
+          Push-Location ..\alt
+          npx electron-vite build
+          npx electron-builder --win --x64 --dir --publish never "-c.directories.output=release-alt"
+          Pop-Location
+      - name: Messen
+        shell: pwsh
+        run: |
+          function Measure-App($exe, $out) {
+            New-Item -ItemType Directory -Force -Path $out | Out-Null
+            foreach ($phase in @("import", "run")) {
+              $p = Start-Process -FilePath $exe -ArgumentList "--perf-test=$out", "--perf-photos=$env:RUNNER_TEMP\fotos", "--perf-phase=$phase" -PassThru
+              if (-not $p.WaitForExit(1500000)) { $p.Kill(); Write-Host "Zeitüberschreitung in Phase $phase" }
+              Write-Host "Phase $phase beendet, Code $($p.ExitCode)"
+            }
+          }
+          Measure-App (Resolve-Path "..\alt\release-alt\win-unpacked\Lichtkammer.exe").Path "$env:RUNNER_TEMP\perf-alt"
+          Measure-App (Resolve-Path "release-neu\win-unpacked\Lichtkammer.exe").Path "$env:RUNNER_TEMP\perf-neu"
+      - name: Vergleich
+        shell: pwsh
+        run: |
+          $table = node scripts/compare-perf.mjs "$env:RUNNER_TEMP\perf-alt" "$env:RUNNER_TEMP\perf-neu"
+          $table | Write-Host
+          $table | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          Get-Content "$env:RUNNER_TEMP\perf-neu\perf-run.json" -Raw | Write-Host
+      - name: Grafikkarten-Vergleich (GPU gegen CPU)
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "gpu"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $p = Start-Process -FilePath (Resolve-Path "release-neu\win-unpacked\Lichtkammer.exe").Path -ArgumentList "--gpu-test=$out" -PassThru
+          if (-not $p.WaitForExit(600000)) { $p.Kill(); Write-Host "Zeitüberschreitung" }
+          Get-Content (Join-Path $out "gpu-test.json") -Raw | Write-Host
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tempo
+          path: |
+            ${{ runner.temp }}/perf-alt/*.json
+            ${{ runner.temp }}/perf-neu/*.json
+            ${{ runner.temp }}/gpu

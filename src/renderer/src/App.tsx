@@ -5,6 +5,7 @@ import { DevelopView } from '@renderer/components/DevelopView'
 import { ExportDialog } from '@renderer/components/ExportDialog'
 import { LibraryView } from '@renderer/components/LibraryView'
 import { TopBar, type ViewId } from '@renderer/components/TopBar'
+import { getEngine } from '@renderer/lib/gpu/shared'
 import { TooltipProvider } from '@renderer/components/ui/tooltip'
 
 export default function App() {
@@ -23,6 +24,12 @@ export default function App() {
   }, [])
   const dragDepth = useRef(0)
   const settingsTimer = useRef<number | null>(null)
+
+  // Grafikkarten-Vorschau im Leerlauf vorbereiten (Shader übersetzen), damit das erste Foto sofort erscheint.
+  useEffect(() => {
+    const handle = window.setTimeout(() => void getEngine(), 400)
+    return () => window.clearTimeout(handle)
+  }, [])
 
   useEffect(() => {
     void window.api.getCatalog().then((next) => {
@@ -78,6 +85,7 @@ export default function App() {
   useEffect(() => {
     // Für den Rauchtest: Entwickeln öffnen.
     ;(window as unknown as { __lkOpenDevelop?: () => void }).__lkOpenDevelop = () => setView('develop')
+    ;(window as unknown as { __lkSelect?: (id: string) => void }).__lkSelect = (id) => setSelectedId(id)
   }, [])
 
   if (!catalog) {

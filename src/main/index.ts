@@ -4,6 +4,8 @@ import { app, BrowserWindow, ipcMain, Menu, protocol, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { ImagePool } from './pool'
 import { Session } from './session'
+import { runGpuTest } from './gputest'
+import { runPerfTest } from './perf'
 import { runImportBench, runSmokeTest } from './smoke'
 import { Updater } from './updater'
 import type { EditParams, ExportOptions, Settings } from '../shared/types'
@@ -11,7 +13,9 @@ import type { EditParams, ExportOptions, Settings } from '../shared/types'
 let mainWindow: BrowserWindow | null = null
 // Vorschaubilder kommen über lkthumb://, damit die Oberfläche sie träge und ohne base64 lädt.
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'lkthumb', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }
+  { scheme: 'lkthumb', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  // lkraw:// liefert Fotos roh (RGB) für die Grafikkarte; die Oberfläche holt sie per fetch.
+  { scheme: 'lkraw', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
 ])
 const updater = new Updater((state) => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:state', state)
@@ -20,7 +24,20 @@ const updateTestArg = process.argv.find((arg) => arg.startsWith('--update-test='
 const smokeArg = process.argv.find((arg) => arg.startsWith('--smoke-test='))
 const smokeDir = smokeArg ? smokeArg.slice('--smoke-test='.length) : null
 const benchDir = process.argv.find((arg) => arg.startsWith('--bench-dir='))?.slice('--bench-dir='.length) ?? null
+const perfArg = process.argv.find((arg) => arg.startsWith('--perf-test='))
+const perfDir = perfArg ? perfArg.slice('--perf-test='.length) : null
+const perfPhotos = process.argv.find((arg) => arg.startsWith('--perf-photos='))?.slice('--perf-photos='.length) ?? ''
+const perfPhase = process.argv.find((arg) => arg.startsWith('--perf-phase='))?.slice('--perf-phase='.length) ?? 'run'
+const gpuArg = process.argv.find((arg) => arg.startsWith('--gpu-test='))
+const gpuDir = gpuArg ? gpuArg.slice('--gpu-test='.length) : null
+const processStart = Date.now() - process.uptime() * 1000
+let readyAt = 0
+let shownAt = 0
 if (smokeDir) app.setPath('userData', join(smokeDir, 'userdata'))
+if (perfDir) app.setPath('userData', join(perfDir, 'userdata'))
+if (gpuDir) app.setPath('userData', join(gpuDir, 'userdata'))
+// Ohne Grafikkarte (Server, virtuelle Maschine) rechnet WebGL in Software weiter.
+app.commandLine.appendSwitch('enable-unsafe-swiftshader')
 const pool = new ImagePool()
 const session = new Session(
   pool,
@@ -54,8 +71,11 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    if (!smokeDir) mainWindow?.maximize()
+    if (!smokeDir && !perfDir && !gpuDir) mainWindow?.maximize()
     mainWindow?.show()
+    shownAt = Date.now()
+    // Erst nach dem Anzeigen: einen Arbeitsprozess vorwärmen, damit der erste Import sofort losläuft.
+    if (!smokeDir && !perfDir && !gpuDir) setTimeout(() => session.pool.warm(), 1200)
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -70,7 +90,7 @@ function createWindow(): void {
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'), gpuDir ? { hash: 'gputest' } : undefined)
   }
 }
 
@@ -132,6 +152,7 @@ function buildMenu(): void {
 }
 
 app.whenReady().then(async () => {
+  readyAt = Date.now()
   electronApp.setAppUserModelId('studio.lichtkammer.app')
   app.setName('Lichtkammer')
   await session.init()
@@ -150,6 +171,31 @@ app.whenReady().then(async () => {
       return new Response(null, { status: 500 })
     }
   })
+  protocol.handle('lkraw', async (request) => {
+    try {
+      const url = new URL(request.url)
+      const id = decodeURIComponent(url.pathname.replace(/^\//, ''))
+      const edge = Number(url.searchParams.get('edge') ?? 2560)
+      const purpose = url.searchParams.get('p') ?? 'main'
+      if (!Number.isFinite(edge)) return new Response(null, { status: 400 })
+      const raw = await session.rawPreview(id, edge, purpose)
+      if (!raw) return new Response(null, { status: 404, headers: { 'access-control-allow-origin': '*' } })
+      return new Response(raw.data as unknown as BodyInit, {
+        headers: {
+          'content-type': 'application/octet-stream',
+          'access-control-allow-origin': '*',
+          'access-control-expose-headers': 'x-lk-width, x-lk-height, x-lk-full-width, x-lk-full-height, x-lk-from',
+          'x-lk-width': String(raw.width),
+          'x-lk-height': String(raw.height),
+          'x-lk-full-width': String(raw.fullWidth),
+          'x-lk-full-height': String(raw.fullHeight),
+          'x-lk-from': raw.developedFrom
+        }
+      })
+    } catch {
+      return new Response(null, { status: 500, headers: { 'access-control-allow-origin': '*' } })
+    }
+  })
   if (updateTestArg) {
     // Nur für den Update-Test im Workflow: ohne Fenster prüfen, laden und still installieren.
     await updater.runTest(updateTestArg.slice('--update-test='.length))
@@ -158,7 +204,21 @@ app.whenReady().then(async () => {
   registerIpc()
   buildMenu()
   createWindow()
-  if (!smokeDir) updater.start()
+  if (!smokeDir && !perfDir && !gpuDir) updater.start()
+  if (gpuDir && mainWindow) {
+    const ok = await runGpuTest(mainWindow, gpuDir)
+    app.exit(ok ? 0 : 1)
+    return
+  }
+  if (perfDir && mainWindow) {
+    const ok = await runPerfTest(session, mainWindow, perfDir, perfPhotos, perfPhase, {
+      processStart,
+      ready: readyAt,
+      shown: () => shownAt
+    })
+    app.exit(ok ? 0 : 1)
+    return
+  }
   if (smokeDir && mainWindow) {
     const ok = benchDir
       ? await runImportBench(session, mainWindow, benchDir, smokeDir)

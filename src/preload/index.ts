@@ -44,6 +44,9 @@ const api = {
   checkForUpdates: (): Promise<UpdateState> => ipcRenderer.invoke('update:check'),
   installUpdate: (): Promise<void> => ipcRenderer.invoke('update:install'),
   onUpdateState: (callback: (state: UpdateState) => void): (() => void) => subscribe('update:state', callback),
+  gpuTestNext: (): Promise<unknown> => ipcRenderer.invoke('gputest:next'),
+  gpuTestInfo: (info: Record<string, unknown>): Promise<void> => ipcRenderer.invoke('gputest:info', info),
+  gpuTestSubmit: (pixels: Uint8Array, ms: number): Promise<void> => ipcRenderer.invoke('gputest:submit', pixels, ms),
   onExportRequest: (callback: () => void): (() => void) => subscribe('menu:export', callback)
 }
 

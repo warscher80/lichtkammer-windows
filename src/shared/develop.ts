@@ -1,4 +1,4 @@
-import type { CropRect, EditParams } from '../../shared/types'
+import type { CropRect, EditParams } from './types'
 
 /** Größe nach Drehung in 90°-Schritten. */
 export function rotatedSize(width: number, height: number, rotate: number): { width: number; height: number } {

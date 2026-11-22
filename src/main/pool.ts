@@ -1,7 +1,7 @@
 import { availableParallelism, cpus } from 'node:os'
 import { Worker } from 'node:worker_threads'
 import workerPath from './worker?modulePath'
-import { analyzeFile, renderImage, renderLooks, type AnalyzeResult, type RenderResult } from './engine/process'
+import { analyzeFile, decodeRaw, renderImage, renderLooks, type AnalyzeResult, type RenderResult } from './engine/process'
 import type { EditParams } from '../shared/types'
 
 interface AnalyzePayload {
@@ -26,7 +26,23 @@ interface LooksPayload {
   edge: number
 }
 
-type Payload = AnalyzePayload | RenderPayload | LooksPayload
+interface DecodePayload {
+  type: 'decode'
+  filePath: string
+  maxEdge: number
+}
+
+type Payload = AnalyzePayload | RenderPayload | LooksPayload | DecodePayload
+
+/** Rohes, dekodiertes Foto (RGB, 8 Bit) für die Grafikkarten-Vorschau. */
+export interface RawPreview {
+  data: Uint8Array
+  width: number
+  height: number
+  fullWidth: number
+  fullHeight: number
+  developedFrom: string
+}
 
 export class SupersededError extends Error {
   constructor() {
@@ -39,6 +55,8 @@ interface EnqueueOptions {
   affinity?: string
   /** Ältere, noch wartende Aufträge mit gleichem Schlüssel verwerfen. */
   supersede?: string
+  /** 2 = Bedienung (zuerst), 1 = Vorladen, 0 = Hintergrund (Analyse, Export). */
+  priority?: number
 }
 
 interface OkAnalyze {
@@ -68,19 +86,27 @@ interface OkLooks {
   result: Buffer[]
 }
 
-type Response = OkAnalyze | OkRender | OkLooks | Failed
+interface OkDecode {
+  id: number
+  ok: true
+  type: 'decode'
+  result: RawPreview
+}
+
+type Response = OkAnalyze | OkRender | OkLooks | OkDecode | Failed
 
 interface Job {
   id: number
   payload: Payload
   slot?: number
   supersede?: string
+  priority: number
   resolve: (value: Response) => void
   reject: (error: Error) => void
 }
 
 interface Slot {
-  worker: Worker
+  worker: Worker | null
   busy: boolean
   jobId: number
 }
@@ -96,27 +122,40 @@ export class ImagePool {
   private nextId = 1
   private enabled = true
 
+  private readonly count: number
+
+  /** Die Worker starten erst, wenn Arbeit da ist: der Programmstart bleibt frei. */
   constructor(size = defaultPoolSize()) {
+    this.count = size
+    for (let index = 0; index < size; index += 1) this.slots.push({ worker: null, busy: false, jobId: 0 })
+  }
+
+  private spawn(slot: Slot): boolean {
+    if (slot.worker) return true
     try {
-      for (let index = 0; index < size; index += 1) {
-        const worker = new Worker(workerPath)
-        const slot: Slot = { worker, busy: false, jobId: 0 }
-        worker.on('message', (message: Response) => this.onMessage(slot, message))
-        worker.on('error', (error) => {
-          console.error('Bild-Worker', error)
-          this.enabled = false
-          slot.busy = false
-        })
-        this.slots.push(slot)
-      }
+      const worker = new Worker(workerPath)
+      worker.on('message', (message: Response) => this.onMessage(slot, message))
+      worker.on('error', (error) => {
+        console.error('Bild-Worker', error)
+        this.enabled = false
+        slot.busy = false
+      })
+      slot.worker = worker
+      return true
     } catch (error) {
       console.error('Worker konnten nicht gestartet werden', error)
       this.enabled = false
+      return false
     }
   }
 
+  /** Einen Worker schon vor dem ersten Auftrag starten (nach dem Anzeigen des Fensters). */
+  warm(): void {
+    if (this.slots[0]) this.spawn(this.slots[0])
+  }
+
   get size(): number {
-    return this.enabled ? this.slots.length : 1
+    return this.enabled ? this.count : 1
   }
 
   analyze(filePath: string): Promise<AnalyzeResult> {
@@ -156,6 +195,16 @@ export class ImagePool {
       })
   }
 
+  /** Foto in Bildschirmgröße roh dekodieren (für die Grafikkarten-Vorschau). */
+  async decode(filePath: string, maxEdge: number, queue: EnqueueOptions = {}): Promise<RawPreview> {
+    if (!this.enabled || this.slots.length === 0) return toRawPreview(await decodeRaw(filePath, maxEdge))
+    const response = await withTimeout(this.enqueue({ type: 'decode', filePath, maxEdge }, queue), 120_000)
+    if (!response.ok || response.type !== 'decode') {
+      throw new Error(!response.ok ? response.error : 'Unerwartete Antwort')
+    }
+    return response.result
+  }
+
   looks(options: { filePath: string; edits: EditParams; edge: number }, queue: EnqueueOptions = {}): Promise<Buffer[]> {
     if (!this.enabled || this.slots.length === 0) return renderLooks(options)
     return withTimeout(this.enqueue({ type: 'looks', ...options }, queue), 120_000).then((response) => {
@@ -175,11 +224,16 @@ export class ImagePool {
       for (const job of stale) job.reject(new SupersededError())
     }
     const slot = options.affinity ? hashString(options.affinity) % this.slots.length : undefined
+    const priority = options.priority ?? (options.supersede ? 2 : 0)
     return new Promise((resolve, reject) => {
-      const job: Job = { id, payload, resolve, reject, slot, supersede: options.supersede }
-      // Bedienung (Vorschau, Vorschaubilder) geht vor der Hintergrund-Analyse.
-      if (options.supersede) this.queue.unshift(job)
-      else this.queue.push(job)
+      const job: Job = { id, payload, resolve, reject, slot, supersede: options.supersede, priority }
+      // Bedienung (Vorschau, Vorschaubilder) geht vor dem Vorladen, das vor der Hintergrund-Analyse.
+      if (priority === 0) this.queue.push(job)
+      else {
+        const position = this.queue.findIndex((other) => other.priority < priority)
+        if (position < 0) this.queue.push(job)
+        else this.queue.splice(position, 0, job)
+      }
       this.pump()
     })
   }
@@ -189,6 +243,7 @@ export class ImagePool {
       if (slot.busy) return
       const position = this.queue.findIndex((job) => job.slot === undefined || job.slot === slotIndex)
       if (position < 0) return
+      if (!this.spawn(slot) || !slot.worker) return
       const [job] = this.queue.splice(position, 1)
       slot.busy = true
       slot.jobId = job.id
@@ -205,6 +260,17 @@ export class ImagePool {
     this.pending.delete(message.id)
     job?.resolve(message)
     this.pump()
+  }
+}
+
+function toRawPreview(decoded: Awaited<ReturnType<typeof decodeRaw>>): RawPreview {
+  return {
+    data: decoded.data,
+    width: decoded.width,
+    height: decoded.height,
+    fullWidth: decoded.fullWidth,
+    fullHeight: decoded.fullHeight,
+    developedFrom: decoded.developedFrom
   }
 }
 
