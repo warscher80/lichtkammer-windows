@@ -44,9 +44,11 @@ win:
         - x64
 
 nsis:
-  oneClick: false
+  # Ein Klick, keine Admin-Rechte, Verknüpfung auf dem Desktop, App startet danach.
+  oneClick: true
   perMachine: false
-  allowToChangeInstallationDirectory: true
+  runAfterFinish: true
+  createStartMenuShortcut: true
   shortcutName: Lichtkammer
   uninstallDisplayName: Lichtkammer
   createDesktopShortcut: always

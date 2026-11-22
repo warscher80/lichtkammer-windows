@@ -1,10 +1,16 @@
-import { NEUTRAL_EDITS, type EditParams } from '../../shared/types'
+import { cloneEdits, NEUTRAL_EDITS, type EditParams } from '../../shared/types'
 
 export interface ImageStats {
   meanL: number
   std: number
   p5: number
   p95: number
+  p1: number
+  p99: number
+  /** Anteil fast weißer Pixel. */
+  clipShare: number
+  /** Anteil dunkler Pixel. */
+  darkShare: number
   meanR: number
   meanG: number
   meanB: number
@@ -24,7 +30,7 @@ export function varianceToScore(variance: number): number {
 }
 
 export function suggestEdits(stats: ImageStats, score: number): EditParams {
-  const edits: EditParams = { ...NEUTRAL_EDITS }
+  const edits: EditParams = cloneEdits(NEUTRAL_EDITS)
   const mean = clamp(stats.meanL, 0.05, 0.9)
   let exposure = 1.7 * Math.log2(0.48 / mean)
   const highlightRoom = clamp((0.94 - stats.p95) * 2.6, 0, 1.15)
@@ -82,6 +88,13 @@ export function suggestEdits(stats: ImageStats, score: number): EditParams {
     edits.saturation = 4
     edits.vibrance = 10
   }
+  // Weiß- und Schwarzpunkt wie in Lightroom: den Tonwertumfang voll nutzen.
+  const snowy = stats.meanL > 0.7 && stats.meanSat < 0.12
+  if (!snowy && stats.p99 < 0.9) edits.whites = clamp(Math.round((0.95 - stats.p99) * 150), 0, 25)
+  else if (stats.clipShare > 0.03) edits.whites = -8
+  if (stats.p1 > 0.05) edits.blacks = clamp(Math.round(-(stats.p1 - 0.02) * 220), -25, 0)
+  else if (stats.p1 < 0.005 && stats.darkShare > 0.3) edits.blacks = 6
+
   // Klarheit bleibt im Mittelton und wird bei schon knackigen Bildern klein gehalten.
   edits.clarity = score > 82 ? 6 : score > 55 ? 10 : 14
   edits.sharpen = score > 85 ? 8 : score > 55 ? 14 : 20

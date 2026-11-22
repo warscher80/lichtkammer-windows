@@ -1,4 +1,5 @@
-import { useEffect } from 'react'
+import { useEffect, type ReactNode } from 'react'
+import { FolderOpen, Images, Sparkles } from 'lucide-react'
 import type { PhotoRecord, Settings } from '../../../shared/types'
 import { editKey } from '../../../shared/types'
 import { Button } from '@renderer/components/ui/button'
@@ -17,6 +18,9 @@ interface LibraryViewProps {
   onMarkBlurry: (id: string) => void
   onRemove: (id: string) => void
   onShowCulled: (which: 'blurry' | 'duplicate') => void
+  onImportFolder: () => void
+  onImportFiles: () => void
+  onSamples: () => void
 }
 
 export function LibraryView(props: LibraryViewProps) {
@@ -84,9 +88,7 @@ export function LibraryView(props: LibraryViewProps) {
               {formatPixels(selected.width, selected.height)} · Schärfe {formatScore(selected.sharpnessScore)}
             </div>
             <div className="flex flex-col gap-2 pt-1">
-              <Button variant="quiet" onClick={() => props.onOpen(selected.id)}>
-                Entwickeln
-              </Button>
+              <Button onClick={() => props.onOpen(selected.id)}>Bearbeiten</Button>
               <Button variant="ghost" onClick={() => props.onMarkBlurry(selected.id)}>
                 Als unscharf markieren
               </Button>
@@ -99,7 +101,12 @@ export function LibraryView(props: LibraryViewProps) {
       </aside>
       <div className="min-h-0 overflow-auto p-4">
         {kept.length === 0 ? (
-          <EmptyLibrary total={props.photos.length} />
+          <EmptyLibrary
+            total={props.photos.length}
+            onImportFolder={props.onImportFolder}
+            onImportFiles={props.onImportFiles}
+            onSamples={props.onSamples}
+          />
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
             {kept.map((photo) => (
@@ -166,6 +173,8 @@ function PhotoTile(props: {
 }) {
   return (
     <button
+      data-photo-card
+      title="Doppelklick zum Bearbeiten"
       className={cn(
         'overflow-hidden rounded-lg bg-[#0c0d10] text-left ring-1 transition',
         props.selected ? 'ring-brass' : 'ring-white/10 hover:ring-white/25'
@@ -200,8 +209,13 @@ function PhotoTile(props: {
   )
 }
 
-function EmptyLibrary({ total }: { total: number }) {
-  if (total > 0) {
+function EmptyLibrary(props: {
+  total: number
+  onImportFolder: () => void
+  onImportFiles: () => void
+  onSamples: () => void
+}) {
+  if (props.total > 0) {
     return (
       <div className="flex h-full items-center justify-center text-center text-ink-soft">
         <div>
@@ -213,13 +227,33 @@ function EmptyLibrary({ total }: { total: number }) {
   }
   return (
     <div className="flex h-full items-center justify-center">
-      <div className="max-w-md text-center">
-        <p className="wordmark text-4xl text-ink">Die Kammer ist leer.</p>
-        <p className="mt-3 text-[14px] leading-relaxed text-ink-soft">
-          Ziehe einen Ordner oder einzelne Fotos hierher. JPG, PNG, TIFF, WEBP und RAW-Dateien mit
-          eingebetteter Vorschau (CR2, NEF, ARW, DNG) werden gesichtet, ohne die Originale anzufassen.
+      <div className="max-w-xl text-center">
+        <p className="wordmark text-5xl text-ink">Willkommen in der Lichtkammer.</p>
+        <p className="mt-4 text-[15px] leading-relaxed text-ink-soft">
+          So einfach geht’s: 1. Fotos holen · 2. Doppelklick auf ein Foto · 3. Look antippen · 4. „Alle sichern“.
+          Deine Originale werden nie verändert.
+        </p>
+        <div className="mt-8 grid grid-cols-3 gap-3">
+          <BigAction icon={<FolderOpen className="size-7" />} label="Ordner öffnen" onClick={props.onImportFolder} />
+          <BigAction icon={<Images className="size-7" />} label="Fotos auswählen" onClick={props.onImportFiles} />
+          <BigAction icon={<Sparkles className="size-7" />} label="Beispiele ansehen" onClick={props.onSamples} />
+        </div>
+        <p className="mt-6 text-[12px] text-faint">
+          Oder einfach einen Ordner hierher ziehen. JPG, PNG, TIFF, WEBP und RAW (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2).
         </p>
       </div>
     </div>
+  )
+}
+
+function BigAction(props: { icon: ReactNode; label: string; onClick: () => void }) {
+  return (
+    <button
+      className="flex flex-col items-center gap-3 rounded-xl bg-white/5 px-4 py-6 text-[14px] text-ink ring-1 ring-white/10 transition hover:bg-white/10 hover:ring-brass/60"
+      onClick={props.onClick}
+    >
+      <span className="text-brass">{props.icon}</span>
+      {props.label}
+    </button>
   )
 }

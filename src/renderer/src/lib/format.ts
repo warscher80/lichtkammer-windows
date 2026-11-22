@@ -1,4 +1,4 @@
-import type { EditParams } from '../../../shared/types'
+import type { ScalarKey } from '../../../shared/types'
 
 export function formatScore(score: number): string {
   return Math.round(score).toLocaleString('de-DE')
@@ -18,11 +18,18 @@ export function formatSigned(value: number): string {
   return rounded.toLocaleString('de-DE')
 }
 
-export function formatEdit(key: keyof EditParams, value: number): string {
+export function formatEdit(key: ScalarKey | 'presetStrength' | 'straighten', value: number): string {
   if (key === 'exposure') return formatExposure(value)
+  if (key === 'presetStrength') return `${Math.round(value)} %`
+  if (key === 'straighten') return formatDegrees(value)
   return formatSigned(value)
 }
 
 export function formatPixels(width: number, height: number): string {
   return `${width.toLocaleString('de-DE')} × ${height.toLocaleString('de-DE')}`
+}
+
+export function formatDegrees(value: number): string {
+  const rounded = Math.round(value * 10) / 10
+  return `${rounded > 0 ? '+' : ''}${rounded.toLocaleString('de-DE')}°`
 }

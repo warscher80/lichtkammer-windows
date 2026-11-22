@@ -4,9 +4,13 @@ import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { ImagePool } from './pool'
 import { Session } from './session'
+import { runSmokeTest } from './smoke'
 import type { EditParams, ExportOptions, Settings } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
+const smokeArg = process.argv.find((arg) => arg.startsWith('--smoke-test='))
+const smokeDir = smokeArg ? smokeArg.slice('--smoke-test='.length) : null
+if (smokeDir) app.setPath('userData', join(smokeDir, 'userdata'))
 const pool = new ImagePool(2)
 const session = new Session(
   pool,
@@ -119,6 +123,11 @@ app.whenReady().then(async () => {
   registerIpc()
   buildMenu()
   createWindow()
+  if (smokeDir && mainWindow) {
+    const ok = await runSmokeTest(session, mainWindow, smokeDir)
+    app.exit(ok ? 0 : 1)
+    return
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -150,10 +159,19 @@ function registerIpc(): void {
   ipcMain.handle('photos:restore', (_event, ids: unknown) => session.restore(stringList(ids)))
   ipcMain.handle('photos:blurry', (_event, ids: unknown) => session.markBlurry(stringList(ids)))
   ipcMain.handle('photos:remove', (_event, ids: unknown) => session.removeFromLibrary(stringList(ids)))
-  ipcMain.handle('preview', (_event, id: unknown, edits: unknown, maxEdge: unknown) => {
+  ipcMain.handle('preview', (_event, id: unknown, edits: unknown, maxEdge: unknown, options: unknown) => {
     if (!isId(id) || (edits !== null && !isRecord(edits)) || typeof maxEdge !== 'number') return null
-    return session.preview(id, edits as EditParams | null, maxEdge)
+    const extra = isRecord(options) ? options : {}
+    return session.preview(id, edits as EditParams | null, maxEdge, {
+      ignoreCrop: extra.ignoreCrop === true,
+      purpose: typeof extra.purpose === 'string' && extra.purpose.length < 40 ? extra.purpose : 'main'
+    })
   })
+  ipcMain.handle('looks', (_event, id: unknown, edits: unknown) => {
+    if (!isId(id) || !isRecord(edits)) return null
+    return session.lookPreviews(id, edits as unknown as EditParams)
+  })
+  ipcMain.handle('save:all', () => session.saveAll())
   ipcMain.handle('thumb', (_event, id: unknown) => (isId(id) ? session.thumb(id) : ''))
   ipcMain.handle('dialog:directory', () => session.chooseOutputDir())
   ipcMain.handle('export', (_event, options: unknown) => {

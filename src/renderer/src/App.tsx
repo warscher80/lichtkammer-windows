@@ -96,6 +96,11 @@ export default function App() {
     setSelectedId(catalog.photos.find((photo) => photo.status === 'kept')?.id ?? catalog.photos[0]?.id ?? null)
   }, [catalog, selectedId])
 
+  useEffect(() => {
+    // Für den Rauchtest: Entwickeln öffnen.
+    ;(window as unknown as { __lkOpenDevelop?: () => void }).__lkOpenDevelop = () => setView('develop')
+  }, [])
+
   if (!catalog) {
     return (
       <div className="flex h-full items-center justify-center bg-canvas">
@@ -115,6 +120,12 @@ export default function App() {
     settingsTimer.current = window.setTimeout(() => {
       void window.api.setSettings(settings).then(setCatalog)
     }, 80)
+  }
+
+  function saveAll(): void {
+    void window.api.saveAll().catch((error: unknown) => {
+      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Sichern fehlgeschlagen' })
+    })
   }
 
   function edit(id: string, edits: EditParams, draggingEdit: boolean): void {
@@ -144,6 +155,7 @@ export default function App() {
           onImportFiles={() => void window.api.importDialog('files')}
           onSamples={() => void window.api.importSamples()}
           onExport={() => setExportOpen(true)}
+          onSaveAll={saveAll}
         />
         {busy && progress && (
           <div className="border-b border-white/10 bg-panel px-4 py-2">
@@ -183,6 +195,9 @@ export default function App() {
                 void window.api.removeFromLibrary([id]).then(setCatalog)
                 setSelectedId(null)
               }}
+              onImportFolder={() => void window.api.importDialog('folder')}
+              onImportFiles={() => void window.api.importDialog('files')}
+              onSamples={() => void window.api.importSamples()}
               onShowCulled={(which) => {
                 setCulledTab(which)
                 setView('culled')
@@ -213,6 +228,7 @@ export default function App() {
               onEdit={edit}
               onAuto={(id) => void window.api.applyAuto(id).then(setCatalog)}
               onNeutral={(id) => void window.api.resetEdits(id).then(setCatalog)}
+              onSaveAll={saveAll}
             />
           )}
           {dragging && (

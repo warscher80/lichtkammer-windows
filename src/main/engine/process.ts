@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import sharp from 'sharp'
 import { suggestEdits, varianceToScore, type ImageStats } from './auto'
 import { hashToHex, perceptualHashFromGray } from './hash'
 import { decodeSensorRaw, isSensorRaw } from './rawDecode'
 import { extractLargestJpeg } from './rawExtract'
-import type { DevelopedFrom, EditParams } from '../../shared/types'
+import { effectiveEdits, LOOKS, monochromeAmount } from '../../shared/looks'
+import { hasColorWork, type DevelopedFrom, type EditParams } from '../../shared/types'
+import { adjustHsl, geometryExtract, needsGeometry, rotatedSize, skyMask } from './develop'
 
 sharp.cache({ files: 16, memory: 64 })
 
@@ -80,9 +82,51 @@ export async function renderImage(options: {
   maxEdge: number
   format: 'jpeg' | 'png'
   quality: number
+  ignoreCrop?: boolean
 }): Promise<RenderResult> {
-  const decoded = await openImage(options.filePath, options.maxEdge)
-  return renderDecoded(decoded, options.edits, options.format, options.quality)
+  const decoded = await openImageCached(options.filePath, options.maxEdge)
+  return renderDecoded(decoded, options.edits, options.format, options.quality, options.ignoreCrop === true, options.maxEdge > 0)
+}
+
+/** Kleine Vorschauen aller Looks für das aktuelle Foto. */
+export async function renderLooks(options: { filePath: string; edits: EditParams; edge: number }): Promise<Buffer[]> {
+  const decoded = await openImageCached(options.filePath, options.edge)
+  const results: Buffer[] = []
+  for (const look of LOOKS) {
+    const edits = { ...options.edits, preset: look.id, presetStrength: 100, crop: options.edits.crop }
+    const rendered = await renderDecoded(decoded, { ...edits, sharpen: 0, noise: 0 }, 'jpeg', 72, false, true)
+    results.push(rendered.buffer)
+  }
+  return results
+}
+
+const decodeCache = new Map<string, { decoded: Decoded; mtime: number }>()
+const DECODE_CACHE_SIZE = 4
+
+/** Dekodierte Vorschau-Bilder im Speicher halten, damit Regler flüssig reagieren. */
+async function openImageCached(filePath: string, maxEdge: number): Promise<Decoded> {
+  if (maxEdge <= 0) return openImage(filePath, maxEdge)
+  let mtime = 0
+  try {
+    mtime = (await stat(filePath)).mtimeMs
+  } catch {
+    mtime = 0
+  }
+  const key = `${filePath}|${maxEdge}`
+  const hit = decodeCache.get(key)
+  if (hit && hit.mtime === mtime) {
+    decodeCache.delete(key)
+    decodeCache.set(key, hit)
+    return hit.decoded
+  }
+  const decoded = await openImage(filePath, maxEdge)
+  decodeCache.set(key, { decoded, mtime })
+  while (decodeCache.size > DECODE_CACHE_SIZE) {
+    const oldest = decodeCache.keys().next().value
+    if (oldest === undefined) break
+    decodeCache.delete(oldest)
+  }
+  return decoded
 }
 
 export async function channelMeans(
@@ -276,6 +320,8 @@ function measureStats(pixels: Buffer): ImageStats {
   let midCount = 0
   let meanL = 0
   let meanSquares = 0
+  let clipCount = 0
+  let darkCount = 0
   const count = pixels.length / 3
 
   for (let index = 0; index < pixels.length; index += 3) {
@@ -286,6 +332,8 @@ function measureStats(pixels: Buffer): ImageStats {
     meanL += y
     meanSquares += y * y
     bins[Math.min(255, Math.max(0, Math.round(y * 255)))] += 1
+    if (y > 0.98) clipCount += 1
+    if (y < 0.12) darkCount += 1
     const max = Math.max(r, g, b)
     const min = Math.min(r, g, b)
     const sat = max === 0 ? 0 : (max - min) / max
@@ -311,6 +359,10 @@ function measureStats(pixels: Buffer): ImageStats {
     std: Math.sqrt(Math.max(0, variance)),
     p5: percentile(bins, count, 0.05),
     p95: percentile(bins, count, 0.95),
+    p1: percentile(bins, count, 0.01),
+    p99: percentile(bins, count, 0.99),
+    clipShare: count ? clipCount / count : 0,
+    darkShare: count ? darkCount / count : 0,
     meanR: midCount ? red / midCount : 0.5,
     meanG: midCount ? green / midCount : 0.5,
     meanB: midCount ? blue / midCount : 0.5,
@@ -337,27 +389,97 @@ async function renderDecoded(
   decoded: Decoded,
   edits: EditParams,
   format: 'jpeg' | 'png',
-  quality: number
+  quality: number,
+  ignoreCrop = false,
+  fast = false
 ): Promise<RenderResult> {
-  const colored = applyColor(decoded.data, edits)
-  const detailed = await applyDetail(colored.pixels, decoded.width, decoded.height, edits)
+  const effective = effectiveEdits(edits)
+  const mono = monochromeAmount(edits)
+  const geo = await applyGeometry(decoded.data, decoded.width, decoded.height, effective, ignoreCrop)
+  const sky = effective.skyEnhance ? await buildSkyMask(geo.data, geo.width, geo.height) : null
+  const colored = applyColor(geo.data, effective, mono, sky)
+  const detailed = await applyDetail(colored.pixels, geo.width, geo.height, effective)
   const pipeline = sharp(detailed, {
-    raw: { width: decoded.width, height: decoded.height, channels: 3 }
+    raw: { width: geo.width, height: geo.height, channels: 3 }
   })
   const buffer =
     format === 'png'
       ? await pipeline.png({ compressionLevel: 9 }).toBuffer()
-      : await pipeline.jpeg({ quality: clampInt(quality, 40, 100), mozjpeg: true, chromaSubsampling: '4:4:4' }).toBuffer()
+      : await pipeline
+          .jpeg({ quality: clampInt(quality, 40, 100), mozjpeg: !fast, chromaSubsampling: fast ? '4:2:0' : '4:4:4' })
+          .toBuffer()
   return {
     buffer,
-    width: decoded.width,
-    height: decoded.height,
+    width: geo.width,
+    height: geo.height,
     histogram: colored.histogram,
     mime: format === 'png' ? 'image/png' : 'image/jpeg'
   }
 }
 
-function applyColor(pixels: Buffer, edits: EditParams): { pixels: Buffer; histogram: number[] } {
+/** Drehen (90°-Schritte), Begradigen und Zuschneiden. */
+async function applyGeometry(
+  pixels: Buffer,
+  width: number,
+  height: number,
+  edits: EditParams,
+  ignoreCrop: boolean
+): Promise<{ data: Buffer; width: number; height: number }> {
+  if (!needsGeometry(edits, ignoreCrop)) return { data: pixels, width, height }
+  const base = rotatedSize(width, height, edits.rotate)
+  const angle = edits.rotate + edits.straighten
+  let data = pixels
+  let canvasWidth = width
+  let canvasHeight = height
+  if (Math.abs(angle % 360) > 0.001) {
+    const rotated = await sharp(pixels, { raw: { width, height, channels: 3 } })
+      .rotate(angle, { background: { r: 0, g: 0, b: 0 } })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+    data = rotated.data
+    canvasWidth = rotated.info.width
+    canvasHeight = rotated.info.height
+  }
+  const rect = geometryExtract({
+    baseWidth: base.width,
+    baseHeight: base.height,
+    canvasWidth,
+    canvasHeight,
+    straighten: edits.straighten,
+    crop: ignoreCrop ? null : edits.crop
+  })
+  if (rect.left === 0 && rect.top === 0 && rect.width === canvasWidth && rect.height === canvasHeight) {
+    return { data, width: canvasWidth, height: canvasHeight }
+  }
+  const out = await sharp(data, { raw: { width: canvasWidth, height: canvasHeight, channels: 3 } })
+    .extract(rect)
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  return { data: out.data, width: out.info.width, height: out.info.height }
+}
+
+async function buildSkyMask(pixels: Buffer, width: number, height: number): Promise<Buffer | null> {
+  const long = 192
+  const small = await sharp(pixels, { raw: { width, height, channels: 3 } })
+    .resize({ width: long, height: long, fit: 'inside' })
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  const mask = skyMask(small.data, small.info.width, small.info.height)
+  if (!mask) return null
+  return sharp(Buffer.from(mask), { raw: { width: small.info.width, height: small.info.height, channels: 1 } })
+    .resize(width, height, { fit: 'fill', kernel: 'linear' })
+    .extractChannel(0)
+    .raw()
+    .toBuffer()
+}
+
+export function applyColor(
+  pixels: Buffer,
+  edits: EditParams,
+  mono = 0,
+  sky: Buffer | null = null
+): { pixels: Buffer; histogram: number[] } {
   const lutR = buildChannelLut(edits, 'r')
   const lutG = buildChannelLut(edits, 'g')
   const lutB = buildChannelLut(edits, 'b')
@@ -365,21 +487,42 @@ function applyColor(pixels: Buffer, edits: EditParams): { pixels: Buffer; histog
   const histogram = new Array<number>(48).fill(0)
   const satMul = edits.saturation / 100
   const vib = edits.vibrance / 100
+  const hsl = hasColorWork(edits)
+  const hslOut = [0, 0, 0]
+  const keep = 1 - Math.min(1, Math.max(0, mono))
 
-  for (let index = 0; index < pixels.length; index += 3) {
+  for (let index = 0, pixel = 0; index < pixels.length; index += 3, pixel += 1) {
     let r = lutR[pixels[index]] / 255
     let g = lutG[pixels[index + 1]] / 255
     let b = lutB[pixels[index + 2]] / 255
-    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    const dr = r - y
-    const dg = g - y
-    const db = b - y
+    if (hsl) {
+      adjustHsl(r, g, b, edits.hslHue, edits.hslSat, edits.hslLum, hslOut)
+      r = hslOut[0]
+      g = hslOut[1]
+      b = hslOut[2]
+    }
+    let y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    let dr = r - y
+    let dg = g - y
+    let db = b - y
     const pixSat = Math.min(1, Math.sqrt(dr * dr + dg * dg + db * db) / 0.42)
     const skin = skinWeight(r, g, b)
-    const factor = Math.max(0, 1 + satMul * (1 - skin * 0.65) + vib * (1 - pixSat) * 0.85 * (1 - skin))
-    r = clamp01(y + dr * factor)
-    g = clamp01(y + dg * factor)
-    b = clamp01(y + db * factor)
+    let factor = Math.max(0, 1 + satMul * (1 - skin * 0.65) + vib * (1 - pixSat) * 0.85 * (1 - skin))
+    if (sky) {
+      const m = sky[pixel] / 255
+      if (m > 0.01) {
+        // Himmel: etwas dunkler, satter und mit mehr Zeichnung.
+        y = y * (1 - 0.14 * m) - 0.04 * m * (y - 0.5)
+        factor *= 1 + 0.28 * m
+      }
+    }
+    factor *= keep
+    dr *= factor
+    dg *= factor
+    db *= factor
+    r = clamp01(y + dr)
+    g = clamp01(y + dg)
+    b = clamp01(y + db)
     output[index] = Math.round(r * 255)
     output[index + 1] = Math.round(g * 255)
     output[index + 2] = Math.round(b * 255)
@@ -394,7 +537,7 @@ function applyColor(pixels: Buffer, edits: EditParams): { pixels: Buffer; histog
   }
 }
 
-function buildChannelLut(edits: EditParams, channel: 'r' | 'g' | 'b'): Uint8ClampedArray {
+export function buildChannelLut(edits: EditParams, channel: 'r' | 'g' | 'b'): Uint8ClampedArray {
   const temperature = edits.temperature / 100
   const tint = edits.tint / 100
   const exposure = Math.pow(2, edits.exposure)
@@ -406,6 +549,8 @@ function buildChannelLut(edits: EditParams, channel: 'r' | 'g' | 'b'): Uint8Clam
   const shadow = edits.shadows / 100
   const highlight = edits.highlights / 100
   const contrast = 1 + edits.contrast / 100
+  const whites = (edits.whites ?? 0) / 100
+  const blacks = (edits.blacks ?? 0) / 100
   const lut = new Uint8ClampedArray(256)
   for (let value = 0; value < 256; value += 1) {
     let linear = LINEAR[value] * gain
@@ -420,6 +565,10 @@ function buildChannelLut(edits: EditParams, channel: 'r' | 'g' | 'b'): Uint8Clam
       encoded = encoded * 0.4 + recovered * 0.6
     }
     encoded = (clamp01(encoded) - 0.5) * contrast + 0.5
+    // Weiß: verschiebt den hellen Endpunkt, Schwarz den dunklen.
+    encoded = clamp01(encoded)
+    encoded = encoded + whites * 0.22 * encoded * encoded
+    encoded = encoded + blacks * 0.2 * Math.pow(1 - clamp01(encoded), 3)
     lut[value] = Math.round(clamp01(encoded) * 255)
   }
   return lut

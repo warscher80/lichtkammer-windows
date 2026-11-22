@@ -1,4 +1,4 @@
-import { FolderOpen, Images, Sparkles, Download } from 'lucide-react'
+import { FolderOpen, Images, Sparkles, Download, Save } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { cn } from '@renderer/lib/utils'
 
@@ -15,12 +15,13 @@ interface TopBarProps {
   onImportFiles: () => void
   onSamples: () => void
   onExport: () => void
+  onSaveAll: () => void
 }
 
 const VIEWS: { id: ViewId; label: string }[] = [
   { id: 'library', label: 'Bibliothek' },
   { id: 'culled', label: 'Aussortiert' },
-  { id: 'develop', label: 'Entwickeln' }
+  { id: 'develop', label: 'Bearbeiten' }
 ]
 
 export function TopBar(props: TopBarProps) {
@@ -58,15 +59,19 @@ export function TopBar(props: TopBarProps) {
         </Button>
         <Button variant="outline" onClick={props.onImportFolder} disabled={props.busy}>
           <FolderOpen className="size-3.5" />
-          Ordner
+          Ordner öffnen
         </Button>
         <Button variant="outline" onClick={props.onImportFiles} disabled={props.busy}>
           <Images className="size-3.5" />
-          Dateien
+          Fotos hinzufügen
         </Button>
-        <Button onClick={props.onExport} disabled={props.busy || props.kept === 0}>
+        <Button variant="outline" onClick={props.onExport} disabled={props.busy || props.kept === 0} title="Format und Qualität wählen">
           <Download className="size-3.5" />
-          Export
+          Exportieren…
+        </Button>
+        <Button onClick={props.onSaveAll} disabled={props.busy || props.kept === 0} title="Alle behaltenen Fotos als JPEG in einen Ordner sichern">
+          <Save className="size-3.5" />
+          Alle sichern
         </Button>
       </div>
     </header>

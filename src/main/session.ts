@@ -5,9 +5,10 @@ import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path
 import { app, dialog, type BrowserWindow, shell } from 'electron'
 import { applyCulling } from './engine/culling'
 import { collectImages, copyCulledFiles } from './engine/files'
-import type { ImagePool } from './pool'
+import { SupersededError, type ImagePool } from './pool'
 import {
   cloneEdits,
+  sanitizeEdits,
   DEFAULT_SETTINGS,
   editKey,
   NEUTRAL_EDITS,
@@ -49,6 +50,11 @@ export class Session {
       const raw = await readFile(this.catalogPath, 'utf8')
       const parsed = JSON.parse(raw) as Catalog
       if (parsed.version === 1 && Array.isArray(parsed.photos) && parsed.settings) {
+        // Ältere Kataloge: fehlende Regler (Weiß, Schwarz, HSL, Looks, Zuschnitt) ergänzen.
+        for (const photo of parsed.photos) {
+          photo.edits = sanitizeEdits(photo.edits)
+          photo.autoEdits = sanitizeEdits(photo.autoEdits)
+        }
         this.catalog = parsed
       }
     } catch {
@@ -180,7 +186,16 @@ export class Session {
   async applyAuto(id: string): Promise<Catalog> {
     const photo = this.catalog.photos.find((item) => item.id === id)
     if (!photo) return this.catalog
-    photo.edits = cloneEdits(photo.autoEdits)
+    // Automatik für Licht und Farbe; Look, Drehung und Zuschnitt bleiben.
+    const auto = sanitizeEdits(photo.autoEdits)
+    photo.edits = {
+      ...auto,
+      preset: photo.edits.preset,
+      presetStrength: photo.edits.presetStrength,
+      rotate: photo.edits.rotate,
+      straighten: photo.edits.straighten,
+      crop: photo.edits.crop
+    }
     await this.persist()
     this.emit('catalog:update', this.catalog)
     return this.catalog
@@ -229,21 +244,60 @@ export class Session {
     return this.catalog
   }
 
-  async preview(id: string, edits: EditParams | null, maxEdge: number): Promise<PreviewPayload> {
+  async preview(
+    id: string,
+    edits: EditParams | null,
+    maxEdge: number,
+    options: { ignoreCrop?: boolean; purpose?: string } = {}
+  ): Promise<PreviewPayload | null> {
     const photo = this.requirePhoto(id)
-    const rendered = await this.pool.render({
-      filePath: photo.sourcePath,
-      edits: edits ? sanitizeEdits(edits) : cloneEdits(NEUTRAL_EDITS),
-      maxEdge: clamp(Math.round(maxEdge), 320, 2400),
-      format: 'jpeg',
-      quality: 82
-    })
-    return {
-      dataUrl: `data:image/jpeg;base64,${Buffer.from(rendered.buffer).toString('base64')}`,
-      width: rendered.width,
-      height: rendered.height,
-      histogram: rendered.histogram
+    const purpose = options.purpose ?? 'main'
+    try {
+      const rendered = await this.pool.render(
+        {
+          filePath: photo.sourcePath,
+          edits: edits ? sanitizeEdits(edits) : cloneEdits(NEUTRAL_EDITS),
+          maxEdge: clamp(Math.round(maxEdge), 200, 4096),
+          format: 'jpeg',
+          quality: 84,
+          ignoreCrop: options.ignoreCrop === true
+        },
+        { affinity: photo.sourcePath, supersede: `preview:${purpose}` }
+      )
+      return {
+        dataUrl: `data:image/jpeg;base64,${Buffer.from(rendered.buffer).toString('base64')}`,
+        width: rendered.width,
+        height: rendered.height,
+        histogram: rendered.histogram
+      }
+    } catch (error) {
+      if (error instanceof SupersededError) return null
+      throw error
     }
+  }
+
+  async lookPreviews(id: string, edits: EditParams): Promise<string[] | null> {
+    const photo = this.requirePhoto(id)
+    try {
+      const buffers = await this.pool.looks(
+        { filePath: photo.sourcePath, edits: sanitizeEdits(edits), edge: 220 },
+        { affinity: photo.sourcePath, supersede: 'looks' }
+      )
+      return buffers.map((buffer) => `data:image/jpeg;base64,${buffer.toString('base64')}`)
+    } catch (error) {
+      if (error instanceof SupersededError) return null
+      throw error
+    }
+  }
+
+  /** „Alle sichern“: alle behaltenen Fotos mit Bearbeitung als JPEG in einen Ordner. */
+  async saveAll(): Promise<ExportResult | null> {
+    const directory = await this.chooseOutputDir()
+    if (!directory) return null
+    const result = await this.exportPhotos({ directory, format: 'jpeg', quality: 92, scope: 'kept' })
+    this.notice('info', `${result.exported} Fotos gesichert in ${directory}`)
+    if (result.files[0]) shell.showItemInFolder(result.files[0])
+    return result
   }
 
   async thumb(id: string): Promise<string> {
@@ -261,7 +315,7 @@ export class Session {
       const rendered = await this.pool.render({
         filePath: photo.sourcePath,
         edits: photo.edits,
-        maxEdge: 560,
+        maxEdge: 480,
         format: 'jpeg',
         quality: 76
       })
@@ -296,6 +350,7 @@ export class Session {
     this.busy = true
     this.cancelRequested = false
     const files: string[] = []
+    const failed: string[] = []
     try {
       await mkdir(options.directory, { recursive: true })
       for (let index = 0; index < selected.length; index += 1) {
@@ -311,20 +366,28 @@ export class Session {
         const extension = options.format === 'png' ? '.png' : '.jpg'
         const base = photo.fileName.replace(/\.[^.]+$/, '')
         const target = await uniqueFile(options.directory, `${base}_lichtkammer${extension}`)
-        const rendered = await this.pool.render({
-          filePath: photo.sourcePath,
-          edits: photo.edits,
-          maxEdge: 0,
-          format: options.format,
-          quality: options.quality
-        })
-        await writeFile(target, rendered.buffer)
-        files.push(target)
+        try {
+          const rendered = await this.pool.render({
+            filePath: photo.sourcePath,
+            edits: photo.edits,
+            maxEdge: 0,
+            format: options.format,
+            quality: options.quality
+          })
+          await writeFile(target, rendered.buffer)
+          files.push(target)
+          photo.savedKey = editKey(photo.edits)
+        } catch (error) {
+          failed.push(`${photo.fileName}: ${shortError(error)}`)
+        }
       }
     } finally {
       this.progress(IDLE)
       this.busy = false
+      await this.persist()
+      this.emit('catalog:update', this.catalog)
     }
+    if (failed.length) this.notice('error', `Nicht exportiert: ${failed.slice(0, 3).join(' · ')}`)
     return { exported: files.length, directory: options.directory, files }
   }
 
@@ -439,23 +502,6 @@ function isImportablePath(target: string): boolean {
 function samplesDirectory(): string | null {
   const candidates = [join(app.getAppPath(), 'beispiele'), join(process.resourcesPath, 'beispiele')]
   return candidates.find((directory) => existsSync(directory)) ?? null
-}
-
-function sanitizeEdits(edits: EditParams): EditParams {
-  const next = cloneEdits(NEUTRAL_EDITS)
-  const keys = Object.keys(NEUTRAL_EDITS) as (keyof EditParams)[]
-  for (const key of keys) {
-    const value = edits?.[key]
-    next[key] = typeof value === 'number' && Number.isFinite(value) ? value : 0
-  }
-  next.exposure = Math.round(clamp(next.exposure, -3, 3) * 20) / 20
-  for (const key of keys) {
-    if (key === 'exposure') continue
-    const max = key === 'sharpen' || key === 'noise' ? 100 : 100
-    const min = key === 'sharpen' || key === 'noise' ? 0 : -100
-    next[key] = Math.round(clamp(next[key], min, max))
-  }
-  return next
 }
 
 async function uniqueFile(directory: string, fileName: string): Promise<string> {

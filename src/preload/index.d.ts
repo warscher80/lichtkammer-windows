@@ -22,7 +22,14 @@ export interface LichtkammerApi {
   restore: (ids: string[]) => Promise<Catalog>
   markBlurry: (ids: string[]) => Promise<Catalog>
   removeFromLibrary: (ids: string[]) => Promise<Catalog>
-  preview: (id: string, edits: EditParams | null, maxEdge: number) => Promise<PreviewPayload>
+  preview: (
+    id: string,
+    edits: EditParams | null,
+    maxEdge: number,
+    options?: { ignoreCrop?: boolean; purpose?: string }
+  ) => Promise<PreviewPayload | null>
+  lookPreviews: (id: string, edits: EditParams) => Promise<string[] | null>
+  saveAll: () => Promise<ExportResult | null>
   thumb: (id: string) => Promise<string>
   chooseOutputDir: () => Promise<string | null>
   exportPhotos: (options: ExportOptions) => Promise<ExportResult>

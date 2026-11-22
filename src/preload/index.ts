@@ -23,8 +23,14 @@ const api = {
   restore: (ids: string[]): Promise<Catalog> => ipcRenderer.invoke('photos:restore', ids),
   markBlurry: (ids: string[]): Promise<Catalog> => ipcRenderer.invoke('photos:blurry', ids),
   removeFromLibrary: (ids: string[]): Promise<Catalog> => ipcRenderer.invoke('photos:remove', ids),
-  preview: (id: string, edits: EditParams | null, maxEdge: number): Promise<PreviewPayload> =>
-    ipcRenderer.invoke('preview', id, edits, maxEdge),
+  preview: (
+    id: string,
+    edits: EditParams | null,
+    maxEdge: number,
+    options?: { ignoreCrop?: boolean; purpose?: string }
+  ): Promise<PreviewPayload | null> => ipcRenderer.invoke('preview', id, edits, maxEdge, options ?? {}),
+  lookPreviews: (id: string, edits: EditParams): Promise<string[] | null> => ipcRenderer.invoke('looks', id, edits),
+  saveAll: (): Promise<ExportResult | null> => ipcRenderer.invoke('save:all'),
   thumb: (id: string): Promise<string> => ipcRenderer.invoke('thumb', id),
   chooseOutputDir: (): Promise<string | null> => ipcRenderer.invoke('dialog:directory'),
   exportPhotos: (options: ExportOptions): Promise<ExportResult> => ipcRenderer.invoke('export', options),

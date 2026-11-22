@@ -8,7 +8,8 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()]
   },
   preload: {
-    plugins: [externalizeDepsPlugin()]
+    // Das Preload läuft in der Sandbox und darf keine node_modules nachladen: alles bündeln.
+    plugins: [externalizeDepsPlugin({ exclude: ['@electron-toolkit/preload'] })]
   },
   renderer: {
     resolve: {

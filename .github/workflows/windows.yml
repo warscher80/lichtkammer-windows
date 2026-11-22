@@ -1,0 +1,63 @@
+# Baut den Windows-Installer, prüft die Bildpipeline und startet die App
+# einmal als Rauchtest. Keine Secrets nötig.
+name: Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows-Installer
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run verify
+      - run: npm run dist:win
+      - name: Rauchtest (App starten, Beispiele importieren, bearbeiten, exportieren)
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "smoke"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $p = Start-Process -FilePath "release\win-unpacked\Lichtkammer.exe" -ArgumentList "--smoke-test=$out" -PassThru
+          if (-not $p.WaitForExit(240000)) { $p.Kill(); throw "Rauchtest: Zeitüberschreitung" }
+          Get-ChildItem $out
+          $report = Get-Content (Join-Path $out "smoke.json") -Raw
+          Write-Host $report
+          if (-not ($report | ConvertFrom-Json).ok) { throw "Rauchtest fehlgeschlagen" }
+      - name: Größe
+        shell: pwsh
+        run: Get-Item release\Lichtkammer-Setup.exe | Select-Object Name, Length
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.1.${{ github.run_number }}
+          name: Lichtkammer für Windows 1.1.${{ github.run_number }}
+          body: |
+            Lichtkammer für Windows (64 Bit, Windows 10 und 11).
+
+            Herunterladen: Lichtkammer-Setup.exe unten anklicken, dann die Datei öffnen.
+            Windows SmartScreen warnt beim ersten Start, weil der Installer nicht signiert ist:
+            „Weitere Informationen“ anklicken, dann „Trotzdem ausführen“.
+          files: release/Lichtkammer-Setup.exe
+          make_latest: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: smoke
+          path: ${{ runner.temp }}/smoke

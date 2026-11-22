@@ -1,5 +1,5 @@
 import { parentPort } from 'node:worker_threads'
-import { analyzeFile, renderImage } from './engine/process'
+import { analyzeFile, renderImage, renderLooks } from './engine/process'
 import type { EditParams } from '../shared/types'
 
 interface AnalyzeMessage {
@@ -16,9 +16,18 @@ interface RenderMessage {
   maxEdge: number
   format: 'jpeg' | 'png'
   quality: number
+  ignoreCrop?: boolean
 }
 
-type WorkerMessage = AnalyzeMessage | RenderMessage
+interface LooksMessage {
+  id: number
+  type: 'looks'
+  filePath: string
+  edits: EditParams
+  edge: number
+}
+
+type WorkerMessage = AnalyzeMessage | RenderMessage | LooksMessage
 
 parentPort?.on('message', (message: WorkerMessage) => {
   void handle(message)
@@ -31,12 +40,18 @@ async function handle(message: WorkerMessage): Promise<void> {
       parentPort?.postMessage({ id: message.id, ok: true, type: 'analyze', result })
       return
     }
+    if (message.type === 'looks') {
+      const result = await renderLooks({ filePath: message.filePath, edits: message.edits, edge: message.edge })
+      parentPort?.postMessage({ id: message.id, ok: true, type: 'looks', result })
+      return
+    }
     const result = await renderImage({
       filePath: message.filePath,
       edits: message.edits,
       maxEdge: message.maxEdge,
       format: message.format,
-      quality: message.quality
+      quality: message.quality,
+      ignoreCrop: message.ignoreCrop
     })
     parentPort?.postMessage({ id: message.id, ok: true, type: 'render', result })
   } catch (error) {
