@@ -32,6 +32,7 @@ uniform vec4 uBox;        // Bildrahmen im Ziel: links, oben, Breite, Höhe
 uniform float uZoom;
 uniform vec2 uPan;
 uniform vec2 uSrcDim;     // Quellgröße in Pixeln
+uniform vec2 uSrcCenter;  // Quellposition der Leinwandmitte (Pixel)
 uniform mat2 uRot;        // Ausgabe-Koordinaten (Mitte = 0) -> Quell-Koordinaten (Mitte = 0)
 uniform vec2 uGeoOrigin;  // Ausschnitt: Ecke auf der gedrehten Leinwand, bezogen auf deren Mitte (Pixel)
 uniform vec2 uGeoExtent;  // Ausschnitt: Größe in Pixeln
@@ -146,7 +147,7 @@ void main() {
     return;
   }
   vec2 P = uGeoOrigin + uv * uGeoExtent;
-  vec2 S = uRot * P + uSrcDim * 0.5;
+  vec2 S = uRot * P + uSrcCenter;
   vec3 src = texture(uSrc, S / uSrcDim).rgb;
   if (uGeoOnly > 0.5 || uOriginal > 0.5 || p.x < uSplitX) {
     outColor = vec4(src, 0.0);

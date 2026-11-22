@@ -94,7 +94,7 @@ export class GpuPipeline {
     const info = gl.getExtension('WEBGL_debug_renderer_info')
     this.renderer = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER))
     this.image = this.compile(IMAGE_FRAGMENT, [
-      'uSrc', 'uLut', 'uSky', 'uOut', 'uBox', 'uZoom', 'uPan', 'uSrcDim', 'uRot', 'uGeoOrigin', 'uGeoExtent', 'uSatMul', 'uVib', 'uKeep',
+      'uSrc', 'uLut', 'uSky', 'uOut', 'uBox', 'uZoom', 'uPan', 'uSrcDim', 'uSrcCenter', 'uRot', 'uGeoOrigin', 'uGeoExtent', 'uSatMul', 'uVib', 'uKeep',
       'uHsl', 'uHue', 'uSat', 'uLum', 'uSkyOn', 'uSplitX', 'uOriginal', 'uGeoOnly', 'uBg', 'uFlipY'
     ])
     this.blur = this.compile(BLUR_FRAGMENT, ['uTex', 'uDir', 'uSigma', 'uFlipY'])
@@ -241,6 +241,7 @@ export class GpuPipeline {
     gl.uniform2f(u.uPan, view.pan[0], view.pan[1])
     gl.uniform2f(u.uSrcDim, src.width, src.height)
     gl.uniformMatrix2fv(u.uRot, false, params.rot)
+    gl.uniform2f(u.uSrcCenter, params.srcCenter[0], params.srcCenter[1])
     gl.uniform2f(u.uGeoOrigin, params.origin[0], params.origin[1])
     gl.uniform2f(u.uGeoExtent, params.extent[0], params.extent[1])
     gl.uniform1f(u.uSatMul, params.satMul)
@@ -410,6 +411,7 @@ export class GpuPipeline {
     gl.uniform2f(u.uPan, 0, 0)
     gl.uniform2f(u.uSrcDim, src.width, src.height)
     gl.uniformMatrix2fv(u.uRot, false, params.rot)
+    gl.uniform2f(u.uSrcCenter, params.srcCenter[0], params.srcCenter[1])
     gl.uniform2f(u.uGeoOrigin, params.origin[0], params.origin[1])
     gl.uniform2f(u.uGeoExtent, params.extent[0], params.extent[1])
     gl.uniform1f(u.uSatMul, params.satMul)

@@ -19,6 +19,8 @@ export interface LichtkammerApi {
   setSettings: (settings: Settings) => Promise<Catalog>
   setEdits: (id: string, edits: EditParams) => Promise<void>
   applyAuto: (id: string) => Promise<Catalog>
+  autoPerfect: (ids?: string[]) => Promise<Catalog>
+  applyEditsTo: (source: EditParams, ids: string[]) => Promise<Catalog>
   resetEdits: (id: string) => Promise<Catalog>
   restore: (ids: string[]) => Promise<Catalog>
   markBlurry: (ids: string[]) => Promise<Catalog>

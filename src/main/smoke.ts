@@ -79,6 +79,17 @@ export async function runSmokeTest(session: Session, window: BrowserWindow, outD
       const info = await stat(join(exportDir, file))
       steps.push(`${file}: ${Math.round(info.size / 1024)} KB`)
     }
+    // Motiv-Erkennung und „Automatisch perfekt“
+    await session.backfillMotifs()
+    const withMotif = session.getCatalog().photos.filter((photo) => photo.status === 'kept' && photo.motif)
+    if (withMotif.length !== kept.length) throw new Error(`Motiv fehlt: ${withMotif.length}/${kept.length}`)
+    const motifCounts: Record<string, number> = {}
+    for (const photo of withMotif) motifCounts[photo.motif as string] = (motifCounts[photo.motif as string] ?? 0) + 1
+    steps.push(`Motive: ${JSON.stringify(motifCounts)}`)
+    const perfect = await session.autoPerfect()
+    const perfectKept = perfect.photos.filter((photo) => photo.status === 'kept')
+    if (perfectKept.some((photo) => !photo.edits.preset)) throw new Error('Automatisch perfekt: Look fehlt')
+    steps.push(`Automatisch perfekt: ${perfectKept.length} Fotos, Looks ${[...new Set(perfectKept.map((photo) => photo.edits.preset))].join(', ')}`)
     // Oberfläche: Bibliothek zeigt Fotos
     await new Promise((resolve) => setTimeout(resolve, 2500))
     const domCount = (await window.webContents.executeJavaScript(
@@ -96,6 +107,24 @@ export async function runSmokeTest(session: Session, window: BrowserWindow, outD
     await new Promise((resolve) => setTimeout(resolve, 4000))
     const develop = await window.webContents.capturePage()
     await writeFile(join(outDir, 'entwickeln.png'), develop.toPNG())
+    const gpuInUse = (await window.webContents.executeJavaScript('Boolean(document.querySelector("canvas[data-gpu-canvas]"))')) as boolean
+    steps.push(`Vorschau: ${gpuInUse ? 'Grafikkarte (WebGL2)' : 'Rückfall auf CPU'}`)
+    {
+      const size = develop.getSize()
+      const bitmap = develop.toBitmap()
+      let sum = 0
+      let n = 0
+      for (let y = Math.round(size.height * 0.35); y < Math.round(size.height * 0.55); y += 4) {
+        for (let x = Math.round(size.width * 0.25); x < Math.round(size.width * 0.5); x += 4) {
+          const at = (y * size.width + x) * 4
+          sum += bitmap[at] + bitmap[at + 1] + bitmap[at + 2]
+          n += 3
+        }
+      }
+      const mean = sum / Math.max(1, n)
+      steps.push(`Bildmitte: mittlere Helligkeit ${Math.round(mean)}`)
+      if (mean < 12) throw new Error('Entwickeln zeigt kein Bild (schwarz)')
+    }
     const lookButtons = (await window.webContents.executeJavaScript(
       'document.querySelectorAll("[data-look]").length'
     )) as number

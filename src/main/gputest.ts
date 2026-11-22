@@ -184,7 +184,7 @@ export async function runGpuTest(window: BrowserWindow, outDir: string): Promise
     report.worstMeanDeltaE = Math.max(0, ...means)
     report.worstCase = valid.sort((a, b) => (b.meanDeltaE as number) - (a.meanDeltaE as number))[0] ?? null
     report.errors = errors.slice(0, 5)
-    report.ok = valid.length === rows.length && rows.length > 0 && valid.every((row) => (row.meanDeltaE as number) < (row.rotated ? 5 : 2.3))
+    report.ok = valid.length === rows.length && rows.length > 0 && valid.every((row) => (row.meanDeltaE as number) < 2.3)
     await writeFile(join(outDir, 'gpu-test-cases.json'), JSON.stringify(rows, null, 1))
   } catch (error) {
     report.error = error instanceof Error ? error.message : String(error)

@@ -115,6 +115,8 @@ export interface PhotoRecord {
   camera?: string
   /** Bearbeitung, mit der zuletzt gesichert wurde. */
   savedKey?: string | null
+  /** Erkanntes Motiv (lokal berechnet), daraus der Look-Vorschlag. */
+  motif?: 'portrait' | 'landscape' | 'night' | 'other'
 }
 
 export interface Catalog {

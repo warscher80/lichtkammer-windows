@@ -1,5 +1,6 @@
 import { memo, useEffect, type ReactNode } from 'react'
-import { FolderOpen, Images, Sparkles } from 'lucide-react'
+import { FolderOpen, Images, Save, Sparkles } from 'lucide-react'
+import { MOTIF_LABELS } from '../../../shared/motif'
 import type { PhotoRecord, Settings } from '../../../shared/types'
 import { thumbUrl } from '@renderer/lib/thumb'
 import { Button } from '@renderer/components/ui/button'
@@ -20,6 +21,9 @@ interface LibraryViewProps {
   onImportFolder: () => void
   onImportFiles: () => void
   onSamples: () => void
+  onAutoPerfect: () => void
+  onSaveAll: () => void
+  busy: boolean
 }
 
 export function LibraryView(props: LibraryViewProps) {
@@ -27,9 +31,15 @@ export function LibraryView(props: LibraryViewProps) {
   const blurry = props.photos.filter((photo) => photo.status === 'blurry').length
   const duplicates = props.photos.filter((photo) => photo.status === 'duplicate').length
   const selected = props.photos.find((photo) => photo.id === props.selectedId) ?? null
+  const seriesSize = new Map<string, number>()
+  for (const photo of props.photos) if (photo.groupId) seriesSize.set(photo.groupId, (seriesSize.get(photo.groupId) ?? 0) + 1)
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Enter' && props.selectedId && (event.target === document.body || (event.target as HTMLElement | null)?.hasAttribute?.('data-photo-card'))) {
+        props.onOpen(props.selectedId)
+        return
+      }
       if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return
       if (kept.length === 0) return
       const index = Math.max(0, kept.findIndex((photo) => photo.id === props.selectedId))
@@ -107,11 +117,27 @@ export function LibraryView(props: LibraryViewProps) {
             onSamples={props.onSamples}
           />
         ) : (
+          <>
+          <div className="mb-4 flex flex-wrap items-center gap-4 rounded-xl bg-gradient-to-r from-brass/20 to-brass/5 px-5 py-4 ring-1 ring-brass/40">
+            <div className="min-w-[260px] flex-1">
+              <div className="text-[16px] text-ink">{kept.length} {kept.length === 1 ? 'Foto' : 'Fotos'} bereit</div>
+              <div className="mt-0.5 text-[13px] text-ink-soft">
+                Ein Klick verbessert Licht und Farbe und wählt zu jedem Foto den passenden Look (Porträt, Landschaft, Nacht …). Danach „Alle sichern“.
+              </div>
+            </div>
+            <Button size="lg" onClick={props.onAutoPerfect} disabled={props.busy}>
+              <Sparkles className="size-4" /> Automatisch perfekt
+            </Button>
+            <Button size="lg" variant="outline" onClick={props.onSaveAll} disabled={props.busy}>
+              <Save className="size-4" /> Alle sichern
+            </Button>
+          </div>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-3">
             {kept.map((photo) => (
               <PhotoTile
                 key={photo.id}
                 photo={photo}
+                series={photo.groupId ? seriesSize.get(photo.groupId) ?? 0 : 0}
                 selected={photo.id === props.selectedId}
                 src={thumbUrl(photo)}
                 onSelect={props.onSelect}
@@ -119,6 +145,7 @@ export function LibraryView(props: LibraryViewProps) {
               />
             ))}
           </div>
+          </>
         )}
       </div>
     </div>
@@ -165,6 +192,7 @@ function Threshold(props: {
 
 const PhotoTile = memo(function PhotoTile(props: {
   photo: PhotoRecord
+  series: number
   selected: boolean
   src: string
   onSelect: (id: string) => void
@@ -189,6 +217,14 @@ const PhotoTile = memo(function PhotoTile(props: {
           <div className="truncate text-[12px]">{props.photo.fileName}</div>
           <div className="text-[11px] text-faint">Schärfe {formatScore(props.photo.sharpnessScore)}</div>
         </div>
+        {props.series > 1 && (
+          <span className="shrink-0 rounded bg-keep/15 px-1.5 py-0.5 text-[10px] text-keep" title="Aus einer Serie ähnlicher Fotos wurde automatisch die beste Aufnahme behalten">
+            Beste von {props.series}
+          </span>
+        )}
+        {props.photo.motif && props.photo.motif !== 'other' && !props.series && (
+          <span className="shrink-0 rounded bg-white/10 px-1.5 py-0.5 text-[10px] text-ink-soft">{MOTIF_LABELS[props.photo.motif]}</span>
+        )}
         {props.photo.developedFrom === 'sensor' && (
           <span className="shrink-0 rounded bg-brass/15 px-1.5 py-0.5 text-[10px] tracking-wide text-brass uppercase">
             RAW
@@ -209,7 +245,9 @@ const PhotoTile = memo(function PhotoTile(props: {
   a.onOpen === b.onOpen &&
   a.photo.fileName === b.photo.fileName &&
   a.photo.sharpnessScore === b.photo.sharpnessScore &&
-  a.photo.developedFrom === b.photo.developedFrom
+  a.photo.developedFrom === b.photo.developedFrom &&
+  a.photo.motif === b.photo.motif &&
+  a.series === b.series
 )
 
 function EmptyLibrary(props: {
@@ -233,7 +271,8 @@ function EmptyLibrary(props: {
       <div className="max-w-xl text-center">
         <p className="wordmark text-5xl text-ink">Willkommen in der Lichtkammer.</p>
         <p className="mt-4 text-[15px] leading-relaxed text-ink-soft">
-          So einfach geht’s: 1. Fotos holen · 2. Doppelklick auf ein Foto · 3. Look antippen · 4. „Alle sichern“.
+          So einfach geht’s: 1. Fotos holen · 2. „Automatisch perfekt“ klicken · 3. Wenn du magst: Foto doppelklicken, Look antippen
+          (Tasten 1–9) · 4. „Alle sichern“. Unscharfe und doppelte Fotos sortiert Lichtkammer von selbst aus.
           Deine Originale werden nie verändert.
         </p>
         <div className="mt-8 grid grid-cols-3 gap-3">

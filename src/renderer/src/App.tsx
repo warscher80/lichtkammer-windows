@@ -24,6 +24,25 @@ export default function App() {
   }, [])
   const dragDepth = useRef(0)
   const settingsTimer = useRef<number | null>(null)
+  const history = useRef(new Map<string, { undo: EditParams[]; redo: EditParams[]; at: number }>())
+  const clipboard = useRef<EditParams | null>(null)
+  const catalogRef = useRef<Catalog | null>(null)
+  const actions = useRef<Record<string, () => void>>({})
+
+  // Tastenkürzel für das ganze Programm.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+      const key = event.key.toLowerCase()
+      const map: Record<string, string> = { s: 'save', o: 'openFolder', e: 'export' }
+      const name = map[key]
+      if (!name || event.shiftKey) return
+      event.preventDefault()
+      actions.current[name]?.()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // Grafikkarten-Vorschau im Leerlauf vorbereiten (Shader übersetzen), damit das erste Foto sofort erscheint.
   useEffect(() => {
@@ -88,6 +107,8 @@ export default function App() {
     ;(window as unknown as { __lkSelect?: (id: string) => void }).__lkSelect = (id) => setSelectedId(id)
   }, [])
 
+  catalogRef.current = catalog
+
   if (!catalog) {
     return (
       <div className="flex h-full items-center justify-center bg-canvas">
@@ -116,7 +137,29 @@ export default function App() {
     })
   }
 
-  function edit(id: string, edits: EditParams, _dragging: boolean): void {
+  /** Schritte zurück/vor je Foto: schnell aufeinanderfolgende Änderungen (Regler ziehen) zählen als ein Schritt. */
+  function remember(id: string, before: EditParams | undefined, joinWithin = 0): void {
+    if (!before) return
+    const now = Date.now()
+    const entry = history.current.get(id) ?? { undo: [], redo: [], at: 0 }
+    if (joinWithin > 0 && now - entry.at < joinWithin && entry.undo.length > 0) {
+      entry.at = now
+      entry.redo = []
+      history.current.set(id, entry)
+      return
+    }
+    entry.undo.push(before)
+    if (entry.undo.length > 60) entry.undo.shift()
+    entry.redo = []
+    entry.at = now
+    history.current.set(id, entry)
+  }
+
+  function photoEdits(id: string): EditParams | undefined {
+    return catalogRef.current?.photos.find((photo) => photo.id === id)?.edits
+  }
+
+  function applyLocal(id: string, edits: EditParams): void {
     setCatalog((current) =>
       current
         ? {
@@ -125,7 +168,86 @@ export default function App() {
           }
         : current
     )
+    if (catalogRef.current) {
+      catalogRef.current = {
+        ...catalogRef.current,
+        photos: catalogRef.current.photos.map((photo) => (photo.id === id ? { ...photo, edits } : photo))
+      }
+    }
     void window.api.setEdits(id, edits)
+  }
+
+  function edit(id: string, edits: EditParams, _dragging: boolean): void {
+    remember(id, photoEdits(id), 700)
+    applyLocal(id, edits)
+  }
+
+  function tell(message: string): void {
+    setNotice({ kind: 'info', message })
+    window.setTimeout(() => setNotice((current) => (current?.message === message ? null : current)), 3200)
+  }
+
+  function undo(id: string): void {
+    const entry = history.current.get(id)
+    const now = photoEdits(id)
+    if (!entry || entry.undo.length === 0 || !now) {
+      tell('Nichts zum Zurücknehmen.')
+      return
+    }
+    const previous = entry.undo.pop() as EditParams
+    entry.redo.push(now)
+    entry.at = 0
+    applyLocal(id, previous)
+  }
+
+  function redo(id: string): void {
+    const entry = history.current.get(id)
+    const now = photoEdits(id)
+    if (!entry || entry.redo.length === 0 || !now) return
+    const next = entry.redo.pop() as EditParams
+    entry.undo.push(now)
+    entry.at = 0
+    applyLocal(id, next)
+  }
+
+  function copyEdits(id: string): void {
+    const edits = photoEdits(id)
+    if (!edits) return
+    clipboard.current = edits
+    tell('Bearbeitung kopiert. Mit Strg+V auf ein anderes Foto übertragen.')
+  }
+
+  function pasteEdits(ids: string[]): void {
+    const source = clipboard.current
+    if (!source || ids.length === 0) {
+      tell('Erst mit Strg+C die Bearbeitung eines Fotos kopieren.')
+      return
+    }
+    sendEditsTo(source, ids)
+  }
+
+  function sendEditsTo(source: EditParams, ids: string[]): void {
+    for (const id of ids) remember(id, photoEdits(id))
+    void window.api.applyEditsTo(source, ids).then((next) => {
+      setCatalog(next)
+      tell(ids.length === 1 ? 'Bearbeitung übertragen.' : `Bearbeitung auf ${ids.length} Fotos übertragen.`)
+    })
+  }
+
+  function autoPerfect(ids?: string[]): void {
+    const list = ids ?? (catalogRef.current?.photos ?? []).filter((photo) => photo.status === 'kept').map((photo) => photo.id)
+    for (const id of list) remember(id, photoEdits(id))
+    void window.api.autoPerfect(ids).then(setCatalog)
+  }
+
+  actions.current = {
+    save: () => {
+      if (!busy && kept > 0) saveAll()
+    },
+    openFolder: () => void window.api.importDialog('folder'),
+    export: () => {
+      if (!busy && kept > 0) setExportOpen(true)
+    }
   }
 
   return (
@@ -197,6 +319,9 @@ export default function App() {
               onImportFolder={() => void window.api.importDialog('folder')}
               onImportFiles={() => void window.api.importDialog('files')}
               onSamples={() => void window.api.importSamples()}
+              onAutoPerfect={() => autoPerfect()}
+              busy={busy}
+              onSaveAll={saveAll}
               onShowCulled={(which) => {
                 setCulledTab(which)
                 setView('culled')
@@ -223,9 +348,20 @@ export default function App() {
               selectedId={selectedId}
               onSelect={setSelectedId}
               onEdit={edit}
-              onAuto={(id) => void window.api.applyAuto(id).then(setCatalog)}
-              onNeutral={(id) => void window.api.resetEdits(id).then(setCatalog)}
+              onAuto={(id) => autoPerfect([id])}
+              onNeutral={(id) => {
+                remember(id, photoEdits(id))
+                void window.api.resetEdits(id).then(setCatalog)
+              }}
               onSaveAll={saveAll}
+              onUndo={undo}
+              onRedo={redo}
+              onCopy={copyEdits}
+              onPaste={pasteEdits}
+              onSendTo={(id, ids) => {
+                const source = photoEdits(id)
+                if (source) sendEditsTo(source, ids)
+              }}
             />
           )}
           {dragging && (

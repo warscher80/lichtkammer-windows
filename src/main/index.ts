@@ -75,7 +75,10 @@ function createWindow(): void {
     mainWindow?.show()
     shownAt = Date.now()
     // Erst nach dem Anzeigen: einen Arbeitsprozess vorwärmen, damit der erste Import sofort losläuft.
-    if (!smokeDir && !perfDir && !gpuDir) setTimeout(() => session.pool.warm(), 1200)
+    if (!smokeDir && !perfDir && !gpuDir) {
+      setTimeout(() => session.pool.warm(), 1200)
+      setTimeout(() => void session.backfillMotifs(), 5000)
+    }
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -253,6 +256,10 @@ function registerIpc(): void {
     return session.setEdits(id, edits as unknown as EditParams)
   })
   ipcMain.handle('edits:auto', (_event, id: unknown) => (isId(id) ? session.applyAuto(id) : session.getCatalog()))
+  ipcMain.handle('edits:autoPerfect', (_event, ids: unknown) => session.autoPerfect(Array.isArray(ids) ? stringList(ids) : undefined))
+  ipcMain.handle('edits:applyTo', (_event, source: unknown, ids: unknown) =>
+    isRecord(source) ? session.applyEditsTo(source as unknown as EditParams, stringList(ids)) : session.getCatalog()
+  )
   ipcMain.handle('edits:reset', (_event, id: unknown) => (isId(id) ? session.resetEdits(id) : session.getCatalog()))
   ipcMain.handle('photos:restore', (_event, ids: unknown) => session.restore(stringList(ids)))
   ipcMain.handle('photos:blurry', (_event, ids: unknown) => session.markBlurry(stringList(ids)))

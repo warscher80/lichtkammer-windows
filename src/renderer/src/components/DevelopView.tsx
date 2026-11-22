@@ -3,6 +3,7 @@ import { Check, Crop, Maximize, RotateCcw, RotateCw, Sparkles, Sun, Undo2, ZoomI
 import type { CropRect, EditParams, PhotoRecord, ScalarKey } from '../../../shared/types'
 import { BAND_COLORS, BAND_NAMES, cloneEdits, editKey, NEUTRAL_EDITS } from '../../../shared/types'
 import { AUTOMATIC_LOOK, LOOKS } from '../../../shared/looks'
+import { MOTIF_LABELS, MOTIF_LOOK } from '../../../shared/motif'
 import { Button } from '@renderer/components/ui/button'
 import { ScrollArea } from '@renderer/components/ui/scroll-area'
 import { Separator } from '@renderer/components/ui/separator'
@@ -67,6 +68,11 @@ interface DevelopViewProps {
   onAuto: (id: string) => void
   onNeutral: (id: string) => void
   onSaveAll: () => void
+  onUndo: (id: string) => void
+  onRedo: (id: string) => void
+  onCopy: (id: string) => void
+  onPaste: (ids: string[]) => void
+  onSendTo: (id: string, ids: string[]) => void
 }
 
 export function DevelopView(props: DevelopViewProps) {
@@ -88,6 +94,7 @@ export function DevelopView(props: DevelopViewProps) {
   const [pan, setPan] = useState({ x: 0, y: 0 })
   const [stage, setStage] = useState({ width: 800, height: 600 })
   const [looks, setLooks] = useState<string[]>([])
+  const [picked, setPicked] = useState<string[]>([])
   const stageRef = useRef<HTMLDivElement>(null)
   const gpuHost = useMemo(() => getEngine(), [])
   const gpu = gpuHost?.engine ?? null
@@ -191,17 +198,52 @@ export function DevelopView(props: DevelopViewProps) {
     }
   }, [photo?.id, lookBaseKey, scrubbing])
 
-  useEffect(() => {
-    const down = (event: KeyboardEvent): void => {
-      if (event.target instanceof HTMLInputElement) return
-      if (event.key === '\\' || event.key === 'v') setHoldBefore(true)
-      if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
-        if (!photo || strip.length === 0 || cropMode) return
-        const index = Math.max(0, strip.findIndex((item) => item.id === photo.id))
-        const next = event.key === 'ArrowRight' ? (index + 1) % strip.length : (index - 1 + strip.length) % strip.length
-        props.onSelect(strip[next].id)
+  // Tastatur: Pfeile = Foto wechseln, 1–9 = Looks, 0 = Automatik, Strg+Z/Y = zurück/vor, Strg+C/V = Bearbeitung kopieren/einfügen.
+  const keyActions = useRef<(event: KeyboardEvent) => void>(() => undefined)
+  keyActions.current = (event) => {
+    const target = event.target as HTMLElement | null
+    if (target instanceof HTMLInputElement && target.type !== 'checkbox' && target.type !== 'range') return
+    if (target instanceof HTMLTextAreaElement) return
+    if (!photo) return
+    const meta = event.ctrlKey || event.metaKey
+    const key = event.key.toLowerCase()
+    if (meta && !event.altKey) {
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault()
+        props.onUndo(photo.id)
+      } else if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault()
+        props.onRedo(photo.id)
+      } else if (key === 'c') {
+        event.preventDefault()
+        props.onCopy(photo.id)
+      } else if (key === 'v') {
+        event.preventDefault()
+        props.onPaste([photo.id, ...picked])
+      } else if (key === 'a') {
+        event.preventDefault()
+        setPicked(strip.filter((item) => item.id !== photo.id).map((item) => item.id))
       }
+      return
     }
+    if (event.altKey) return
+    if (event.key === '\\' || key === 'v') setHoldBefore(true)
+    if (/^[0-9]$/.test(event.key) && !cropMode) {
+      const look = LOOKS[Number(event.key)]
+      if (look) chooseLookFor(photo, look.id)
+      return
+    }
+    if (event.key === 'Escape') setPicked([])
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      if (target?.closest?.('[role="slider"]')) return
+      if (strip.length === 0 || cropMode) return
+      const index = Math.max(0, strip.findIndex((item) => item.id === photo.id))
+      const next = event.key === 'ArrowRight' ? (index + 1) % strip.length : (index - 1 + strip.length) % strip.length
+      props.onSelect(strip[next].id)
+    }
+  }
+  useEffect(() => {
+    const down = (event: KeyboardEvent): void => keyActions.current(event)
     const up = (event: KeyboardEvent): void => {
       if (event.key === '\\' || event.key === 'v') setHoldBefore(false)
     }
@@ -211,7 +253,18 @@ export function DevelopView(props: DevelopViewProps) {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
     }
-  }, [photo, strip, cropMode, props])
+  }, [])
+
+  // Auswahl für „auf mehrere Fotos übertragen“ gilt nur für das aktuelle Foto-Set.
+  useEffect(() => {
+    setPicked((list) => list.filter((id) => id !== photo?.id && strip.some((item) => item.id === id)))
+  }, [photo?.id, strip.length])
+
+  function chooseLookFor(target: PhotoRecord, id: string): void {
+    const preset = id === AUTOMATIC_LOOK ? null : id
+    const strength = preset && preset === target.edits.preset ? target.edits.presetStrength : 100
+    props.onEdit(target.id, { ...target.edits, preset, presetStrength: strength }, false)
+  }
 
   const fitted = useMemo(() => {
     const padding = 24
@@ -371,6 +424,7 @@ export function DevelopView(props: DevelopViewProps) {
   const showCompare = compare && !holdBefore && !cropMode
   const transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`
   const activeLook = current.edits.preset ?? AUTOMATIC_LOOK
+  const suggested = current.motif ? MOTIF_LOOK[current.motif] : null
   const saved = current.savedKey === key
 
   return (
@@ -492,7 +546,7 @@ export function DevelopView(props: DevelopViewProps) {
           {current.fileName} · {formatPixels(current.width, current.height)}
           {cropMode
             ? ' · Ecken oder Rahmen ziehen'
-            : ' · Mausrad zoomt · Doppelklick 100 % · V halten zeigt das Original'}
+            : ' · ← → Foto wechseln · 1–9 Looks · Strg+Z zurück · Strg+C / Strg+V Bearbeitung übertragen · V halten = Original'}
         </div>
       </div>
 
@@ -504,14 +558,14 @@ export function DevelopView(props: DevelopViewProps) {
               {saved ? 'Gesichert ✓' : 'Original bleibt unverändert'}
             </div>
           </div>
-          <div className="flex gap-1">
-            <Button variant="quiet" size="sm" onClick={() => props.onAuto(current.id)} title="Automatisch verbessern">
-              <Sparkles className="size-3.5" /> Auto
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => props.onNeutral(current.id)} title="Alles zurück auf das Original">
-              <Undo2 className="size-3.5" /> Zurück
-            </Button>
-          </div>
+          <Button variant="ghost" size="sm" onClick={() => props.onNeutral(current.id)} title="Alles zurück auf das Original">
+            <Undo2 className="size-3.5" /> Zurücksetzen
+          </Button>
+        </div>
+        <div className="px-4 pb-3">
+          <Button className="w-full" onClick={() => props.onAuto(current.id)} title="Licht, Farbe und den passenden Look automatisch einstellen">
+            <Sparkles className="size-4" /> Automatisch perfekt
+          </Button>
         </div>
         <Separator />
         <ScrollArea className="min-h-0 flex-1">
@@ -669,9 +723,11 @@ export function DevelopView(props: DevelopViewProps) {
 
       <div className="border-t border-white/10 bg-[#14171b]">
         <div className="flex items-center gap-3 px-3 pt-2">
-          <div className="w-40 shrink-0">
-            <div className="mb-1 flex justify-between text-[11px]">
-              <span className="text-faint uppercase tracking-[0.14em]">Looks</span>
+          <div className="w-44 shrink-0">
+            <div className="mb-1 flex justify-between gap-2 whitespace-nowrap text-[11px]">
+              <span className="text-faint uppercase tracking-[0.14em]">
+                Looks{current.motif ? <span className="ml-1.5 normal-case tracking-normal text-brass/80" title={`Erkannt: ${MOTIF_LABELS[current.motif]} – der Look mit ★ passt dazu`}>★</span> : null}
+              </span>
               <span className={current.edits.preset ? 'text-brass' : 'text-faint'}>
                 Stärke {Math.round(current.edits.presetStrength)} %
               </span>
@@ -720,15 +776,45 @@ export function DevelopView(props: DevelopViewProps) {
                     <div className="h-full animate-pulse bg-white/5" />
                   )}
                 </div>
-                <div className={cn('mt-1 text-[11px]', activeLook === look.id ? 'text-brass' : 'text-ink-soft')}>{look.name}</div>
+                <div className={cn('mt-1 text-[11px]', activeLook === look.id ? 'text-brass' : 'text-ink-soft')}>
+                  <span className="mr-1 text-faint">{index <= 9 ? index : ''}</span>
+                  {look.name}
+                  {suggested === look.id && <span className="ml-1 text-brass" title="Passt zu diesem Foto">★</span>}
+                </div>
               </button>
             ))}
           </div>
         </div>
         <div className="flex items-center gap-2 overflow-x-auto border-t border-white/5 px-3 py-2">
           {strip.map((item) => (
-            <StripThumb key={item.id} photo={item} active={item.id === current.id} onSelect={props.onSelect} />
+            <StripThumb
+              key={item.id}
+              photo={item}
+              active={item.id === current.id}
+              picked={picked.includes(item.id)}
+              onSelect={props.onSelect}
+              onPick={(id) => setPicked((list) => (list.includes(id) ? list.filter((value) => value !== id) : [...list, id]))}
+            />
           ))}
+          {picked.length > 0 ? (
+            <div className="ml-2 flex shrink-0 items-center gap-2 rounded-lg bg-brass/15 px-3 py-1.5 text-[12px] text-ink">
+              <span>{picked.length} Foto{picked.length === 1 ? '' : 's'} gewählt</span>
+              <button
+                className="rounded-md bg-brass px-2.5 py-1 font-medium text-brass-ink hover:brightness-110"
+                onClick={() => {
+                  props.onSendTo(current.id, picked)
+                  setPicked([])
+                }}
+              >
+                Bearbeitung hierher übertragen
+              </button>
+              <button className="text-ink-soft hover:text-ink" onClick={() => setPicked([])}>
+                Abbrechen
+              </button>
+            </div>
+          ) : (
+            <span className="ml-2 shrink-0 text-[11px] text-faint">Strg+Klick wählt mehrere Fotos zum Übertragen</span>
+          )}
         </div>
       </div>
     </div>
@@ -736,7 +822,13 @@ export function DevelopView(props: DevelopViewProps) {
 }
 
 /** Kleines Foto in der Leiste: das gerade bearbeitete lädt sich erst nach kurzer Ruhe neu (nicht bei jedem Reglerschritt). */
-const StripThumb = memo(function StripThumb(props: { photo: PhotoRecord; active: boolean; onSelect: (id: string) => void }) {
+const StripThumb = memo(function StripThumb(props: {
+  photo: PhotoRecord
+  active: boolean
+  picked: boolean
+  onSelect: (id: string) => void
+  onPick: (id: string) => void
+}) {
   const liveKey = editKey(props.photo.edits)
   const [settled, setSettled] = useState(liveKey)
   useEffect(() => {
@@ -752,9 +844,12 @@ const StripThumb = memo(function StripThumb(props: { photo: PhotoRecord; active:
     <button
       className={cn(
         'h-[52px] w-[74px] shrink-0 overflow-hidden rounded-md bg-black ring-1',
-        props.active ? 'ring-2 ring-brass' : 'ring-white/10'
+        props.active ? 'ring-2 ring-brass' : props.picked ? 'ring-2 ring-sky-400' : 'ring-white/10'
       )}
-      onClick={() => props.onSelect(props.photo.id)}
+      onClick={(event) => {
+        if ((event.ctrlKey || event.metaKey || event.shiftKey) && !props.active) props.onPick(props.photo.id)
+        else props.onSelect(props.photo.id)
+      }}
     >
       <img src={url} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" />
     </button>

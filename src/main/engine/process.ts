@@ -1,3 +1,4 @@
+import { detectMotif } from '../../shared/motif'
 import { createHash } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
 import sharp from 'sharp'
@@ -26,6 +27,7 @@ export interface AnalyzeResult {
   developedFrom: DevelopedFrom
   usedEmbeddedPreview: boolean
   camera?: string
+  motif?: 'portrait' | 'landscape' | 'night' | 'other'
 }
 
 export interface RenderResult {
@@ -97,7 +99,8 @@ export async function analyzeFile(filePath: string): Promise<AnalyzeResult> {
     thumb: thumb.buffer,
     developedFrom: base.developedFrom,
     usedEmbeddedPreview: base.developedFrom === 'embedded-preview',
-    camera: base.camera
+    camera: base.camera,
+    motif: detectMotif(small.data, small.info.width, small.info.height)
   }
 }
 

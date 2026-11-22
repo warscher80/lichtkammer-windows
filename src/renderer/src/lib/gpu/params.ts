@@ -17,6 +17,8 @@ export interface GpuParams {
   sky: boolean
   /** Spiegelung der Rotation Ausgabe → Quelle (Spaltenreihenfolge für mat2). */
   rot: [number, number, number, number]
+  /** Quellposition (Pixel, Mitte des Pixels = +0.5) der Leinwandmitte; berücksichtigt, wie libvips das gedrehte Bild ganzzahlig auf die Leinwand setzt. */
+  srcCenter: [number, number]
   /** Ecke des Ausschnitts auf der gedrehten Leinwand, bezogen auf deren Mitte (Pixel), und seine Größe. */
   origin: [number, number]
   extent: [number, number]
@@ -77,10 +79,11 @@ function geometryParams(
   srcWidth: number,
   srcHeight: number,
   ignoreCrop: boolean
-): Pick<GpuParams, 'rot' | 'origin' | 'extent' | 'outWidth' | 'outHeight' | 'geoKey'> {
+): Pick<GpuParams, 'rot' | 'srcCenter' | 'origin' | 'extent' | 'outWidth' | 'outHeight' | 'geoKey'> {
   if (!needsGeometry(edits, ignoreCrop)) {
     return {
       rot: [1, 0, 0, 1],
+      srcCenter: [srcWidth / 2, srcHeight / 2],
       origin: [-srcWidth / 2, -srcHeight / 2],
       extent: [srcWidth, srcHeight],
       outWidth: srcWidth,
@@ -112,8 +115,24 @@ function geometryParams(
   const s = Math.sin(-theta)
   // mat2 in GLSL ist spaltenweise: [m00, m10, m01, m11]
   const rot: [number, number, number, number] = [c, s, -s, c]
+  // libvips: Das Bild wird um seine obere linke Ecke gedreht und um (round(-minX), round(-minY)) auf die Leinwand
+  // verschoben (Pixelmitten bei ganzen Zahlen). Genau das bilden wir nach, damit Vorschau und Export deckungsgleich sind.
+  const ct = Math.cos(theta)
+  const st = Math.sin(theta)
+  // Exakte Vierteldrehungen kopiert libvips verlustfrei Pixel für Pixel (Ecken bei Breite-1 / Höhe-1).
+  const exact = Math.abs(((angleDeg % 90) + 90) % 90) < 0.001 || Math.abs((((angleDeg % 90) + 90) % 90) - 90) < 0.001
+  const w = exact ? srcWidth - 1 : srcWidth
+  const h = exact ? srcHeight - 1 : srcHeight
+  const xs = [0, w * ct, -h * st, w * ct - h * st]
+  const ys = [0, w * st, h * ct, w * st + h * ct]
+  const tx = Math.round(-Math.min(...xs))
+  const ty = Math.round(-Math.min(...ys))
+  const dx = canvasWidth / 2 - 0.5 - tx
+  const dy = canvasHeight / 2 - 0.5 - ty
+  const srcCenter: [number, number] = [c * dx - s * dy + 0.5, s * dx + c * dy + 0.5]
   return {
     rot,
+    srcCenter,
     origin: [rect.left - canvasWidth / 2, rect.top - canvasHeight / 2],
     extent: [rect.width, rect.height],
     outWidth: rect.width,

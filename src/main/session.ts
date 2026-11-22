@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import { app, dialog, type BrowserWindow, shell } from 'electron'
+import sharp from 'sharp'
+import { detectMotif, MOTIF_LOOK, type Motif } from '../shared/motif'
 import { applyCulling } from './engine/culling'
 import { collectImages, copyCulledFiles } from './engine/files'
 import { SupersededError, type ImagePool, type RawPreview } from './pool'
@@ -229,6 +231,7 @@ export class Session {
       this.progress(IDLE)
     }
 
+    void this.backfillMotifs()
     const parts = [`${stats.added} neue Fotos`]
     if (stats.cached > 0) parts.push(`${stats.cached} aus dem Zwischenspeicher`)
     if (stats.skipped > 0) parts.push(`${stats.skipped} bereits vorhanden`)
@@ -306,6 +309,74 @@ export class Session {
       rotate: photo.edits.rotate,
       straighten: photo.edits.straighten,
       crop: photo.edits.crop
+    }
+    await this.persist()
+    this.emit('catalog:update', this.catalog)
+    return this.catalog
+  }
+
+  /** Motiv aus der kleinen Listenvorschau bestimmen (für ältere Kataloge ohne Motiv). */
+  private async motifFor(photo: PhotoRecord): Promise<Motif> {
+    if (photo.motif) return photo.motif
+    try {
+      const small = await sharp(join(this.thumbDir, `${photo.id}.jpg`))
+        .resize({ width: 240, height: 240, fit: 'inside' })
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true })
+      photo.motif = detectMotif(small.data, small.info.width, small.info.height)
+    } catch {
+      photo.motif = 'other'
+    }
+    return photo.motif
+  }
+
+  /** Motive aller Fotos nachtragen (Hintergrund, schnell), damit die Look-Vorschläge sofort da sind. */
+  async backfillMotifs(): Promise<void> {
+    let changed = false
+    for (const photo of this.catalog.photos) {
+      if (photo.motif) continue
+      await this.motifFor(photo)
+      changed = true
+    }
+    if (changed) {
+      this.queueSave()
+      this.emit('catalog:update', this.catalog)
+    }
+  }
+
+  /**
+   * „Automatisch perfekt“: Licht und Farbe automatisch, dazu der zum Motiv passende Look (Porträt, Landschaft, Nacht …).
+   * Drehung und Zuschnitt bleiben. Ohne Kennungen: alle behaltenen Fotos.
+   */
+  async autoPerfect(ids?: string[]): Promise<Catalog> {
+    const wanted = ids ? new Set(ids) : null
+    const targets = this.catalog.photos.filter((photo) => (wanted ? wanted.has(photo.id) : photo.status === 'kept'))
+    for (const photo of targets) {
+      const motif = await this.motifFor(photo)
+      const auto = sanitizeEdits(photo.autoEdits)
+      photo.edits = {
+        ...auto,
+        preset: MOTIF_LOOK[motif],
+        presetStrength: 70,
+        rotate: photo.edits.rotate,
+        straighten: photo.edits.straighten,
+        crop: photo.edits.crop
+      }
+    }
+    await this.persist()
+    this.emit('catalog:update', this.catalog)
+    this.notice('info', `${targets.length} ${targets.length === 1 ? 'Foto' : 'Fotos'} automatisch verbessert – jeweils mit dem passenden Look. Feinschliff: Foto doppelklicken.`)
+    return this.catalog
+  }
+
+  /** Eine Bearbeitung (ohne Drehung und Zuschnitt) auf andere Fotos übertragen. */
+  async applyEditsTo(source: EditParams, ids: string[]): Promise<Catalog> {
+    const wanted = new Set(ids)
+    const clean = sanitizeEdits(source)
+    for (const photo of this.catalog.photos) {
+      if (!wanted.has(photo.id)) continue
+      photo.edits = { ...clean, rotate: photo.edits.rotate, straighten: photo.edits.straighten, crop: photo.edits.crop }
     }
     await this.persist()
     this.emit('catalog:update', this.catalog)
@@ -613,7 +684,8 @@ export class Session {
       importedAt: Date.now(),
       developedFrom: analyzed.developedFrom,
       usedEmbeddedPreview: analyzed.usedEmbeddedPreview,
-      camera: analyzed.camera
+      camera: analyzed.camera,
+      motif: analyzed.motif
     }
   }
 
