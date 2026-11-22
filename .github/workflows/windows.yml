@@ -111,8 +111,9 @@ jobs:
           $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter "Lichtkammer.exe" | Select-Object -First 1
           if (-not $exe) { throw "Lichtkammer.exe nicht installiert" }
           "EXE=$($exe.FullName)" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-          Write-Host "Installiert: $($exe.FullName) Version $($exe.VersionInfo.ProductVersion)"
-          if ($exe.VersionInfo.ProductVersion -ne "1.1.9") { throw "Falsche Startversion" }
+          $installed = (($exe.VersionInfo.ProductVersion -split '\.')[0..2]) -join '.'
+          Write-Host "Installiert: $($exe.FullName) Version $installed"
+          if ($installed -ne "1.1.9") { throw "Falsche Startversion: $installed" }
       - name: Update prüfen, laden und still installieren
         shell: pwsh
         run: |
@@ -128,7 +129,7 @@ jobs:
           $version = ""
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 3
-            $version = (Get-Item $env:EXE).VersionInfo.ProductVersion
+            $version = (((Get-Item $env:EXE).VersionInfo.ProductVersion -split '\.')[0..2]) -join '.'
             if ($version -ne "1.1.9") { break }
           }
           Write-Host "Version nach dem Update: $version (erwartet $($report.to))"
