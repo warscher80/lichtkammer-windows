@@ -26,12 +26,12 @@ const VIEWS: { id: ViewId; label: string }[] = [
 
 export function TopBar(props: TopBarProps) {
   return (
-    <header className="flex h-[52px] items-center gap-4 border-b border-white/10 bg-panel px-4">
+    <header className="flex h-[52px] items-center gap-3 border-b border-white/10 bg-panel px-4">
       <div className="flex items-center gap-2.5 pr-2">
         <Aperture />
         <div className="leading-none">
           <div className="wordmark text-[22px] text-ink">Lichtkammer</div>
-          <div className="mt-0.5 text-[9px] tracking-[0.22em] text-faint uppercase">Sichten & entwickeln</div>
+          <div className="mt-0.5 hidden text-[9px] tracking-[0.22em] text-faint uppercase lg:block">Sichten & entwickeln</div>
         </div>
       </div>
       <nav className="flex items-center gap-1">
@@ -53,21 +53,21 @@ export function TopBar(props: TopBarProps) {
         ))}
       </nav>
       <div className="ml-auto flex items-center gap-2">
-        <Button variant="quiet" onClick={props.onSamples} disabled={props.busy}>
+        <Button variant="quiet" onClick={props.onSamples} disabled={props.busy} title="Beispielbilder laden">
           <Sparkles className="size-3.5" />
-          Beispiele
+          <span className="hidden xl:inline">Beispiele</span>
         </Button>
-        <Button variant="outline" onClick={props.onImportFolder} disabled={props.busy}>
+        <Button variant="outline" onClick={props.onImportFolder} disabled={props.busy} title="Ordner öffnen">
           <FolderOpen className="size-3.5" />
-          Ordner öffnen
+          <span className="hidden xl:inline">Ordner öffnen</span>
         </Button>
-        <Button variant="outline" onClick={props.onImportFiles} disabled={props.busy}>
+        <Button variant="outline" onClick={props.onImportFiles} disabled={props.busy} title="Fotos hinzufügen">
           <Images className="size-3.5" />
-          Fotos hinzufügen
+          <span className="hidden xl:inline">Fotos hinzufügen</span>
         </Button>
         <Button variant="outline" onClick={props.onExport} disabled={props.busy || props.kept === 0} title="Format und Qualität wählen">
           <Download className="size-3.5" />
-          Exportieren…
+          <span className="hidden xl:inline">Exportieren…</span>
         </Button>
         <Button onClick={props.onSaveAll} disabled={props.busy || props.kept === 0} title="Alle behaltenen Fotos als JPEG in einen Ordner sichern">
           <Save className="size-3.5" />

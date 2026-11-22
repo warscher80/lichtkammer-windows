@@ -44,6 +44,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
+    if (!smokeDir) mainWindow?.maximize()
     mainWindow?.show()
   })
 
