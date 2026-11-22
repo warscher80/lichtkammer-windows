@@ -125,12 +125,14 @@ jobs:
           $report = Get-Content (Join-Path $out "update-test.json") -Raw | ConvertFrom-Json
           if (-not $report.ok) { throw "Kein Update gefunden oder geladen" }
           # Der Installer läuft nach dem Beenden der App im Hintergrund.
-          $deadline = (Get-Date).AddSeconds(180)
+          $deadline = (Get-Date).AddSeconds(240)
           $version = ""
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 3
-            $version = (((Get-Item $env:EXE).VersionInfo.ProductVersion -split '\.')[0..2]) -join '.'
-            if ($version -ne "1.1.9") { break }
+            try {
+              $version = (((Get-Item $env:EXE -ErrorAction Stop).VersionInfo.ProductVersion -split '\.')[0..2]) -join '.'
+            } catch { $version = "(wird gerade installiert)"; continue }
+            if ($version -eq $report.to) { break }
           }
           Write-Host "Version nach dem Update: $version (erwartet $($report.to))"
           if ($version -ne $report.to) { throw "Update nicht installiert: $version" }
