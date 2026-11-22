@@ -547,11 +547,22 @@ export class Session {
   async chooseOutputDir(): Promise<string | null> {
     const window = this.getWindow()
     if (!window) return null
+    const prefsFile = join(app.getPath('userData'), 'last-output.txt')
+    let defaultPath: string | undefined
+    try {
+      defaultPath = (await readFile(prefsFile, 'utf8')).trim() || undefined
+    } catch {
+      defaultPath = undefined
+    }
+    if (!defaultPath) defaultPath = app.getPath('pictures')
     const result = await dialog.showOpenDialog(window, {
-      title: 'Zielordner',
+      title: 'Wohin sollen die fertigen Fotos? (Zielordner wählen)',
+      defaultPath,
+      buttonLabel: 'Hier sichern',
       properties: ['openDirectory', 'createDirectory']
     })
     if (result.canceled || result.filePaths.length === 0) return null
+    void writeFile(prefsFile, result.filePaths[0]).catch(() => undefined)
     return result.filePaths[0]
   }
 
