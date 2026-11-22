@@ -78,6 +78,7 @@ export default function App() {
   useEffect(() => {
     // Für den Rauchtest: Entwickeln öffnen.
     ;(window as unknown as { __lkOpenDevelop?: () => void }).__lkOpenDevelop = () => setView('develop')
+    ;(window as unknown as { __lkSelect?: (id: string) => void }).__lkSelect = (id) => setSelectedId(id)
   }, [])
 
   if (!catalog) {

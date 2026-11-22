@@ -4,6 +4,7 @@ import { app, BrowserWindow, ipcMain, Menu, protocol, shell } from 'electron'
 import { electronApp, is, optimizer } from '@electron-toolkit/utils'
 import { ImagePool } from './pool'
 import { Session } from './session'
+import { runPerfTest } from './perf'
 import { runImportBench, runSmokeTest } from './smoke'
 import { Updater } from './updater'
 import type { EditParams, ExportOptions, Settings } from '../shared/types'
@@ -20,7 +21,15 @@ const updateTestArg = process.argv.find((arg) => arg.startsWith('--update-test='
 const smokeArg = process.argv.find((arg) => arg.startsWith('--smoke-test='))
 const smokeDir = smokeArg ? smokeArg.slice('--smoke-test='.length) : null
 const benchDir = process.argv.find((arg) => arg.startsWith('--bench-dir='))?.slice('--bench-dir='.length) ?? null
+const perfArg = process.argv.find((arg) => arg.startsWith('--perf-test='))
+const perfDir = perfArg ? perfArg.slice('--perf-test='.length) : null
+const perfPhotos = process.argv.find((arg) => arg.startsWith('--perf-photos='))?.slice('--perf-photos='.length) ?? ''
+const perfPhase = process.argv.find((arg) => arg.startsWith('--perf-phase='))?.slice('--perf-phase='.length) ?? 'run'
+const processStart = Date.now() - process.uptime() * 1000
+let readyAt = 0
+let shownAt = 0
 if (smokeDir) app.setPath('userData', join(smokeDir, 'userdata'))
+if (perfDir) app.setPath('userData', join(perfDir, 'userdata'))
 const pool = new ImagePool()
 const session = new Session(
   pool,
@@ -54,8 +63,9 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    if (!smokeDir) mainWindow?.maximize()
+    if (!smokeDir && !perfDir) mainWindow?.maximize()
     mainWindow?.show()
+    shownAt = Date.now()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -132,6 +142,7 @@ function buildMenu(): void {
 }
 
 app.whenReady().then(async () => {
+  readyAt = Date.now()
   electronApp.setAppUserModelId('studio.lichtkammer.app')
   app.setName('Lichtkammer')
   await session.init()
@@ -158,7 +169,16 @@ app.whenReady().then(async () => {
   registerIpc()
   buildMenu()
   createWindow()
-  if (!smokeDir) updater.start()
+  if (!smokeDir && !perfDir) updater.start()
+  if (perfDir && mainWindow) {
+    const ok = await runPerfTest(session, mainWindow, perfDir, perfPhotos, perfPhase, {
+      processStart,
+      ready: readyAt,
+      shown: () => shownAt
+    })
+    app.exit(ok ? 0 : 1)
+    return
+  }
   if (smokeDir && mainWindow) {
     const ok = benchDir
       ? await runImportBench(session, mainWindow, benchDir, smokeDir)
